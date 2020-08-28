@@ -1,7 +1,10 @@
-FROM ubuntu:16.04
-RUN apt update
-RUN apt-get -y install python-minimal
-RUN apt-get -y install curl
-RUN curl "https://bootstrap.pypa.io/get-pip.py" -o "get-pip.py"
-RUN python get-pip.py
-RUN pip install cloudify==5.0.5.1
+FROM centos:centos7
+RUN yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm && \
+    yum -y install sudo git ssh jq which && \
+    yum clean all && \
+    curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py && \
+    python get-pip.py && \
+    rm get-pip.py && \
+    pip install --no-cache-dir cloudify==5.0.5.1 awscli && \
+    rm -rf ~/.cache
+COPY resources/cfyci.py /usr/local/bin/cfyci
