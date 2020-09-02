@@ -1,7 +1,5 @@
-FROM centos:centos7
-RUN yum -y install https://dl.fedoraproject.org/pub/epel/epel-release-latest-7.noarch.rpm && \
-    yum -y install sudo git ssh jq which && \
-    yum clean all && \
+FROM alpine:latest
+RUN apk add --no-cache python2 git openssh-client curl gcc python2-dev musl-dev libffi-dev openssl-dev make jq && \
     curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py && \
     python get-pip.py && \
     rm get-pip.py && \
