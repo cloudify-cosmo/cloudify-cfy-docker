@@ -1,25 +1,57 @@
 #!/usr/bin/env python
 
+"""
+Wrapper script for executing Cloudify operations from CI/CD products.
+It uses a combination of CLI and REST API calls with the intention of
+making the usage of Cloudify from CI/CD products as effortless as possible.
+"""
 from __future__ import print_function
 
 import argparse
 import json
+import httplib
 import logging
 import os
 import shutil
 import subprocess
 import sys
+import time
 import tempfile
 
 import yaml
 
-logging.basicConfig(stream=sys.stderr, level=logging.DEBUG, format="%(message)s")
+from cloudify_cli.constants import (
+    CLOUDIFY_USERNAME_ENV,
+    DEFAULT_TENANT_NAME
+)
+from cloudify_cli.cli.cfy import pass_client
+from cloudify_cli.logger import get_events_logger
+from cloudify_cli.execution_events_fetcher import wait_for_execution
+from cloudify_rest_client.executions import Execution
+from cloudify_rest_client.exceptions import CloudifyClientError
 
+logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(message)s")
 logger = logging.getLogger('cfy-ci')
 
 
 OMITTED_ARG = "-"
-INIT_FILE = os.path.expanduser("~/cfy-init")
+CLOUDIFY_HOST_ENV = "CLOUDIFY_HOST"
+CLOUDIFY_SSL_ENV = "CLOUDIFY_SSL"
+# Theoretically I would have liked to use the standard environment variable
+# for this (defined in cloudify_cli.constants; "CLOUDIFY_TENANT"), however that
+# ends up triggering a bug in the CLI.
+#
+# When we initialize the profile (in the initialize() function), we must do so
+# with the tenant name injected into the profile; we must not leave it empty.
+# Otherwise, REST calls would fail because @pass_client wouldn't pass a tenant
+# to the REST call.
+#
+# However, if we inject the tenant to the profile, and the "CLOUDIFY_TENANT" environment
+# variable is defined, then we get an error message that the tenant is defined
+# in both the profile and an environment variable.
+#
+# To work around that, I invented a new environment variable.
+CLOUDIFY_TENANT_NAME_ENV = "CLOUDIFY_TENANT_NAME"
 
 
 def read_json_or_yaml(path):
@@ -28,20 +60,22 @@ def read_json_or_yaml(path):
         return yaml.load(f)
 
 
-def initialize():
+def initialize(**kwargs):
     # Calls the CLI to set a profile. This should normally only happen once.
-    manager_host = os.environ['MANAGER_HOST']
-    manager_user = os.environ['MANAGER_USER']
-    manager_password = os.environ['MANAGER_PASSWORD']
-    manager_tenant = os.environ['MANAGER_TENANT']
+    manager_host = os.environ[CLOUDIFY_HOST_ENV]
+    manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
+    manager_tenant = os.environ.get(CLOUDIFY_TENANT_NAME_ENV, DEFAULT_TENANT_NAME)
+    use_ssl = os.environ.get(CLOUDIFY_SSL_ENV, '').lower() != 'false'
+
+    cmdline = [
+        'cfy', 'profile', 'use', manager_host,
+        '-t', manager_tenant
+    ]
+    if use_ssl:
+        cmdline.append('--ssl')
 
     logger.info("Initializing; host=%s, user=%s, tenant=%s", manager_host, manager_user, manager_tenant)
-    subprocess.check_call([
-        'cfy', 'profile', 'use', manager_host,
-        '-u', manager_user,
-        '-p', manager_password,
-        '-t', manager_tenant]
-    )
+    subprocess.check_call(cmdline)
     logger.info("Profile created successfully")
 
 
@@ -52,7 +86,8 @@ def upload_blueprint(name, path):
     ])
 
 
-def create_deployment(name, blueprint_name, inputs):
+@pass_client()
+def _create_deployment(name, blueprint_name, inputs, client):
     cmdline = [
         'cfy', 'deployments', 'create', name,
         '-b', blueprint_name
@@ -77,29 +112,56 @@ def create_deployment(name, blueprint_name, inputs):
         if temp_inputs_file:
             logger.info("Deleting temporary file: %s", temp_inputs_file.name)
             os.remove(temp_inputs_file.name)
+    # Now wait until the deployment deletion ended.
+    # Since there's no way to get the execution ID of the deployment creation,
+    # we need to look it up (see https://cloudifysource.atlassian.net/browse/CY-2385).
+    executions = client.executions.list(deployment_id=name)
+    if len(executions) != 1:
+        raise Exception("Unexpected number of executions for deployment '%s': %d" % (name, len(executions)))
+    execution = wait_for_execution(
+        client, executions[0], get_events_logger(False), True, timeout=None, logger=logger)
+    if execution.status != Execution.TERMINATED:
+        raise Exception("Unexpected status of execution %s: %s" % (execution.id, execution.status))
 
 
-def install(name):
-    subprocess.check_call([
-        'cfy', 'executions', 'start', 'install',
-        '-d', name
-    ])
+def _start_and_follow_execution(client, deployment_id, workflow_id, parameters):
+    # Use REST here, because "cfy executions start" ends with a zero
+    # even if the execution fails.
+    execution = client.executions.start(deployment_id, workflow_id, parameters)
+    execution = wait_for_execution(client, execution, get_events_logger(False), True, timeout=None, logger=logger)
+    if execution.status != Execution.TERMINATED:
+        raise Exception("Unexpected status of execution %s: %s" % (execution.id, execution.status))
 
 
-def uninstall(name, ignore_failure):
-    cmdline = [
-        'cfy', 'executions', 'start', 'uninstall',
-        '-d', name
-    ]
-    if ignore_failure:
-        cmdline.extend(['-p', 'ignore_failure=true'])
-    subprocess.check_call(cmdline)
+@pass_client()
+def install(name, client):
+    _start_and_follow_execution(client, name, 'install', None)
 
 
-def delete_deployment(name):
+@pass_client()
+def uninstall(name, ignore_failure, client):
+    _start_and_follow_execution(client, name, 'uninstall', {
+        'ignore_failure': ignore_failure
+    })
+
+
+@pass_client()
+def _delete_deployment(name, client):
     subprocess.check_call([
         'cfy', 'deployments', 'delete', name
     ])
+    # Wait until the deployment is actually deleted, as "cfy deployments delete"
+    # is asynchronous.
+    while True:
+        try:
+            logger.info("Waiting for the deployment to be deleted...")
+            client.deployments.get(name)
+            time.sleep(1)
+        except CloudifyClientError as ex:
+            if ex.status_code == httplib.NOT_FOUND:
+                logger.exception("Deployment ended")
+                break
+            raise
 
 
 def write_environment_outputs(name, outputs_file):
@@ -132,18 +194,6 @@ def write_environment_outputs(name, outputs_file):
         shutil.rmtree(temp_dir)
 
 
-def require_init(func):
-    def wrapper(*args, **kwargs):
-        if not os.path.exists(INIT_FILE):
-            logger.info("First time use; will initialize profile now")
-            initialize()
-            with open(INIT_FILE, 'a'):
-                pass
-        func(*args, **kwargs)
-
-    return wrapper
-
-
 def prepare_invocation_params(func):
     def wrapper(*args, **kwargs):
         # kwargs.pop('func', None)
@@ -161,13 +211,16 @@ def prepare_invocation_params(func):
     return wrapper
 
 
-@require_init
+def create_deployment(name, blueprint, inputs_file, **kwargs):
+    _create_deployment(name, blueprint, inputs_file)
+
+
 def create_environment(name, blueprint, inputs_file, outputs_file, **kwargs):
     logger.info("Creating environment; name=%s, blueprint=%s, inputs=%s, outputs=%s",
                 name, blueprint, inputs_file, outputs_file)
     blueprint_name = 'cfyci-%s-bp' % name
     upload_blueprint(blueprint_name, blueprint)
-    create_deployment(name, blueprint_name, inputs_file)
+    _create_deployment(name, blueprint_name, inputs_file)
     install(name)
     write_environment_outputs(name, outputs_file)
 
@@ -200,10 +253,7 @@ class CfyIntegration(object):
 
     def execute(self):
         inputs = self.prepare_inputs()
-        create_deployment(
-            self._deployment_id,
-            self.blueprint_name(),
-            inputs)
+        _create_deployment(self._deployment_id, self.blueprint_name(), inputs)
         install(self._deployment_id)
         write_environment_outputs(self._deployment_id, self._outputs_file)
 
@@ -405,7 +455,6 @@ class CfyKubernetesIntegration(CfyIntegration):
         return inputs
 
 
-@require_init
 @prepare_invocation_params
 def terraform(
         name, module, outputs_file, variables, environment,
@@ -415,7 +464,6 @@ def terraform(
         environment_mapping).execute()
 
 
-@require_init
 def arm(
         name, resource_group, template_file, parameters_file, credentials_file,
         location, outputs_file, **kwargs):
@@ -424,7 +472,6 @@ def arm(
         credentials_file, location).execute()
 
 
-@require_init
 def cfn(
         name, outputs_file, stack_name, template_url, parameters_file, credentials_file,
         region_name, **kwargs):
@@ -433,7 +480,6 @@ def cfn(
         credentials_file, region_name).execute()
 
 
-@require_init
 def kubernetes(
         name, outputs_file, gcp_credentials_file, token, token_file, master_host, namespace,
         app_definition_file, ca_cert_file, ssl_cert_file, ssl_key_file, skip_ssl_verification,
@@ -445,11 +491,14 @@ def kubernetes(
         allow_node_redefinition, debug).execute()
 
 
-@require_init
+def delete_deployment(name, **kwargs):
+    _delete_deployment(name)
+
+
 def delete_environment(name, ignore_failure, **kwargs):
     logger.info("Deleting environment; name=%s, ignore_failure=%s", name, ignore_failure)
     uninstall(name, ignore_failure)
-    delete_deployment(name)
+    _delete_deployment(name)
 
 
 def main():
@@ -477,6 +526,12 @@ def main():
 
     init_parser = subparsers.add_parser('init')
     init_parser.set_defaults(func=initialize)
+
+    create_deployment_parser = subparsers.add_parser('create-deployment')
+    create_deployment_parser.add_argument('--name', required=True)
+    create_deployment_parser.add_argument('--blueprint', required=True)
+    create_deployment_parser.add_argument('--inputs', dest='inputs_file', type=optional_string)
+    create_deployment_parser.set_defaults(func=create_deployment)
 
     create_environment_parser = subparsers.add_parser('create-environment')
     create_environment_parser.add_argument('--name', required=True)
@@ -529,6 +584,10 @@ def main():
     k8s_parser.add_argument('--allow-node-redefinition', type=boolean_string)
     k8s_parser.add_argument('--debug', type=boolean_string)
     k8s_parser.set_defaults(func=kubernetes)
+
+    delete_deployment_parser = subparsers.add_parser('delete-deployment')
+    delete_deployment_parser.add_argument('--name', required=True)
+    delete_deployment_parser.set_defaults(func=delete_deployment)
 
     delete_environment_parser = subparsers.add_parser('delete-environment')
     delete_environment_parser.add_argument('--name', required=True)
