@@ -189,7 +189,7 @@ def _delete_deployment(name, client):
             time.sleep(1)
         except CloudifyClientError as ex:
             if ex.status_code == httplib.NOT_FOUND:
-                logger.exception("Deployment ended")
+                logger.info("Deployment ended")
                 break
             raise
 
