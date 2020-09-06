@@ -18,21 +18,25 @@ import sys
 import time
 import tempfile
 
+from string import Template
+
 import yaml
 
 from cloudify_cli.constants import (
     CLOUDIFY_USERNAME_ENV,
+    CLOUDIFY_PASSWORD_ENV,
     DEFAULT_TENANT_NAME
 )
-from cloudify_cli.cli.cfy import pass_client
 from cloudify_cli.logger import get_events_logger
 from cloudify_cli.execution_events_fetcher import wait_for_execution
+from cloudify_rest_client.client import CloudifyClient, DEFAULT_PROTOCOL, SECURED_PROTOCOL
 from cloudify_rest_client.executions import Execution
 from cloudify_rest_client.exceptions import CloudifyClientError
 
 logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(message)s")
 logger = logging.getLogger('cfy-ci')
 
+IS_GITHUB = 'GITHUB_RUN_ID' in os.environ
 
 OMITTED_ARG = "-"
 CLOUDIFY_HOST_ENV = "CLOUDIFY_HOST"
@@ -79,6 +83,32 @@ def initialize(**kwargs):
     logger.info("Profile created successfully")
 
 
+def with_client(func):
+    """
+    This wrapper is needed because of a limitation in the CLI's "pass_client" decorator:
+    It can't be used from within the same Python process that initialized the profile
+    to begin with. In other words, "pass_client" will only work if it is used in an
+    invocation *after* "initialize()" was called.
+    """
+    def wrapper(*args, **kwargs):
+        manager_host = os.environ[CLOUDIFY_HOST_ENV]
+        manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
+        manager_password = os.environ[CLOUDIFY_PASSWORD_ENV]
+        manager_tenant = os.environ.get(CLOUDIFY_TENANT_NAME_ENV, DEFAULT_TENANT_NAME)
+        use_ssl = os.environ.get(CLOUDIFY_SSL_ENV, '').lower() != 'false'
+        client = CloudifyClient(
+            host=manager_host,
+            username=manager_user,
+            password=manager_password,
+            tenant=manager_tenant,
+            protocol=SECURED_PROTOCOL if use_ssl else DEFAULT_PROTOCOL
+        )
+        kwargs['client'] = client
+        return func(*args, **kwargs)
+
+    return wrapper
+
+
 def upload_blueprint(name, path):
     subprocess.check_call([
         'cfy', 'blueprints', 'upload', path,
@@ -86,7 +116,7 @@ def upload_blueprint(name, path):
     ])
 
 
-@pass_client()
+@with_client
 def _create_deployment(name, blueprint_name, inputs, client):
     cmdline = [
         'cfy', 'deployments', 'create', name,
@@ -133,19 +163,19 @@ def _start_and_follow_execution(client, deployment_id, workflow_id, parameters):
         raise Exception("Unexpected status of execution %s: %s" % (execution.id, execution.status))
 
 
-@pass_client()
+@with_client
 def install(name, client):
     _start_and_follow_execution(client, name, 'install', None)
 
 
-@pass_client()
+@with_client
 def uninstall(name, ignore_failure, client):
     _start_and_follow_execution(client, name, 'uninstall', {
         'ignore_failure': ignore_failure
     })
 
 
-@pass_client()
+@with_client
 def _delete_deployment(name, client):
     subprocess.check_call([
         'cfy', 'deployments', 'delete', name
@@ -164,34 +194,24 @@ def _delete_deployment(name, client):
             raise
 
 
+@with_client
+def get_environment_data(name, client):
+    outputs = client.deployments.outputs.get(name)
+    capabilities = client.deployments.capabilities.get(name)
+    return {
+        "deployment_id": name,
+        "outputs": outputs,
+        "capabilities": capabilities
+    }
+
+
 def write_environment_outputs(name, outputs_file):
     if not outputs_file:
         return
-    temp_dir = tempfile.mkdtemp()
-    try:
-        logger.info("Getting environment's outputs")
-        with tempfile.NamedTemporaryFile(dir=temp_dir, delete=False) as temp_outputs:
-            subprocess.check_call(['cfy', 'deployments', 'outputs', name, '--json'], stdout=temp_outputs)
-        logger.info("Getting environment's capabilities")
-        with tempfile.NamedTemporaryFile(dir=temp_dir, delete=False) as temp_caps:
-            subprocess.check_call(['cfy', 'deployments', 'capabilities', name, '--json'], stdout=temp_caps)
-
-        with open(temp_outputs.name, 'r') as f:
-            outputs = json.load(f)
-        with open(temp_caps.name, 'r') as f:
-            capabilities = json.load(f)
-
-        env_data = {
-            "deployment_id": name,
-            "outputs": outputs,
-            "capabilities": capabilities
-        }
-
-        logger.info("Writing environment data to %s", outputs_file)
-        with open(outputs_file, 'w') as f:
-            json.dump(env_data, f)
-    finally:
-        shutil.rmtree(temp_dir)
+    env_data = get_environment_data(name)
+    logger.info("Writing environment data to %s", outputs_file)
+    with open(outputs_file, 'w') as f:
+        json.dump(env_data, f)
 
 
 def prepare_invocation_params(func):
@@ -222,7 +242,14 @@ def create_environment(name, blueprint, inputs_file, outputs_file, **kwargs):
     upload_blueprint(blueprint_name, blueprint)
     _create_deployment(name, blueprint_name, inputs_file)
     install(name)
-    write_environment_outputs(name, outputs_file)
+    if IS_GITHUB:
+        # Writing to a file has no meaning at all, AFAIK.
+        # Set it as an output instead.
+        env_data = get_environment_data(name)
+        logger.info("Setting environment data output variable: %s", env_data)
+        print("::set-output name=environment-data::%s" % json.dumps(env_data))
+    else:
+        write_environment_outputs(name, outputs_file)
 
 
 class CfyIntegration(object):
@@ -527,20 +554,32 @@ def main():
     init_parser = subparsers.add_parser('init')
     init_parser.set_defaults(func=initialize)
 
-    create_deployment_parser = subparsers.add_parser('create-deployment')
+    common_init_parent = argparse.ArgumentParser(add_help=False)
+    common_init_parent.add_argument('--init', action='store_true', default=False)
+
+    create_deployment_parser = subparsers.add_parser('create-deployment', parents=[common_init_parent])
     create_deployment_parser.add_argument('--name', required=True)
     create_deployment_parser.add_argument('--blueprint', required=True)
     create_deployment_parser.add_argument('--inputs', dest='inputs_file', type=optional_string)
     create_deployment_parser.set_defaults(func=create_deployment)
 
-    create_environment_parser = subparsers.add_parser('create-environment')
+    create_environment_parser = subparsers.add_parser('create-environment', parents=[common_init_parent])
     create_environment_parser.add_argument('--name', required=True)
     create_environment_parser.add_argument('--blueprint', required=True)
     create_environment_parser.add_argument('--inputs', dest='inputs_file', type=optional_string)
     create_environment_parser.add_argument('--outputs', dest='outputs_file', type=optional_string)
     create_environment_parser.set_defaults(func=create_environment)
 
-    integrations_parent = argparse.ArgumentParser(add_help=False)
+    delete_deployment_parser = subparsers.add_parser('delete-deployment', parents=[common_init_parent])
+    delete_deployment_parser.add_argument('--name', required=True)
+    delete_deployment_parser.set_defaults(func=delete_deployment)
+
+    delete_environment_parser = subparsers.add_parser('delete-environment', parents=[common_init_parent])
+    delete_environment_parser.add_argument('--name', required=True)
+    delete_environment_parser.add_argument('--ignore-failure', type=boolean_string)
+    delete_environment_parser.set_defaults(func=delete_environment)
+
+    integrations_parent = argparse.ArgumentParser(add_help=False, parents=[common_init_parent])
     integrations_parent.add_argument('--name')
     integrations_parent.add_argument('--invocation-params-file', type=optional_string)
     integrations_parent.add_argument('--outputs', dest='outputs_file', type=optional_string)
@@ -585,17 +624,23 @@ def main():
     k8s_parser.add_argument('--debug', type=boolean_string)
     k8s_parser.set_defaults(func=kubernetes)
 
-    delete_deployment_parser = subparsers.add_parser('delete-deployment')
-    delete_deployment_parser.add_argument('--name', required=True)
-    delete_deployment_parser.set_defaults(func=delete_deployment)
-
-    delete_environment_parser = subparsers.add_parser('delete-environment')
-    delete_environment_parser.add_argument('--name', required=True)
-    delete_environment_parser.add_argument('--ignore-failure', type=boolean_string)
-    delete_environment_parser.set_defaults(func=delete_environment)
-
     args = parser.parse_args()
-    args.func(**vars(args))
+    vars_map = vars(args)
+
+    # If "--init" provided, then initialize the CLI profile.
+    if vars_map.get('init', False):
+        initialize()
+
+    # GitHub Actions currently don't allow passing environment variables
+    # (such as "GITHUB_RUN_ID", which is convenient for uniqueness) as
+    # action inputs. Therefore, we allow passing them as templates, and we
+    # expand them here.
+    if IS_GITHUB:
+        for key, value in vars_map.iteritems():
+            if value and isinstance(value, str):
+                vars_map[key] = Template(value).substitute(os.environ)
+
+    args.func(**vars_map)
 
 
 if __name__ == '__main__':
