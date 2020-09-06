@@ -243,13 +243,11 @@ def create_environment(name, blueprint, inputs_file, outputs_file, **kwargs):
     _create_deployment(name, blueprint_name, inputs_file)
     install(name)
     if IS_GITHUB:
-        # Writing to a file has no meaning at all, AFAIK.
-        # Set it as an output instead.
+        # Set the environment's data as an output.
         env_data = get_environment_data(name)
         logger.info("Setting environment data output variable: %s", env_data)
         print("::set-output name=environment-data::%s" % json.dumps(env_data))
-    else:
-        write_environment_outputs(name, outputs_file)
+    write_environment_outputs(name, outputs_file)
 
 
 class CfyIntegration(object):
