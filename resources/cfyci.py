@@ -534,10 +534,12 @@ def main():
     # based on conditions. Therefore, we default certain parameters there to a certain
     # value, which is an agreed-upon representation for "I don't really want this".
     def optional_string(s):
-        return s if s != OMITTED_ARG else None
+        if s is None or s in[OMITTED_ARG, '']:
+            return None
+        return s
 
     def boolean_string(s):
-        if s is None:
+        if s is None or s == '':
             return None
         lower_value = s.lower()
         if lower_value == 'true':
