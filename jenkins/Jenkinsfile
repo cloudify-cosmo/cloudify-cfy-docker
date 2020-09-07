@@ -46,6 +46,7 @@ pipeline {
 
     stages {
         stage ('build image') {
+            steps {
 //             withVault([configuration: configuration, vaultSecrets: secrets]) {
                 dir("${env.WORKSPACE}/${env.PROJECT}") {
                     echo "Building Docker Image"
@@ -55,6 +56,7 @@ pipeline {
                     docker push "cloudifyplatform/cloudify-cli:5.0.5.1"
                 }
 //             }
+            }
         }
     }
 }
