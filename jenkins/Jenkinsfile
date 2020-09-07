@@ -1,0 +1,61 @@
+def secrets = [
+    [
+        path: 'secret/jenkins/docker', engineVersion: 2, secretValues: [
+            [envVar: 'DOCKER_USERNAME', vaultKey: 'docker_username'],
+            [envVar: 'DOCKER_PASSWORD', vaultKey: 'docker_password']
+        ]
+    ]
+]
+
+def configuration = [vaultUrl: "${env.VAULT_URL}",  vaultCredentialId: 'vault-app-role', engineVersion: 2]
+
+@Library('pipeline-shared-library') _
+pipeline {
+    agent {
+        kubernetes {
+            label 'cli-docker'
+            defaultContainer 'jnlp'
+            yamlFile 'jenkins/build-pod.yaml'
+        }
+    }
+
+    parameters {
+        string(name: 'VERSION', defaultValue: '5.0.5.1', description: 'Cloudify version label, to be used in the filenames (eg. "5.1.0")')
+        string(name: 'PRERELEASE', defaultValue: '.dev1', description: 'A prerelase/milestone label, to be used in the filenames (eg. ".dev1")')
+        string(name: 'BRANCH', defaultValue: 'master', description: 'Branch name for cloudify-cli-docker')
+    }
+    options {
+        checkoutToSubdirectory('cloudify-cli-docker')
+        buildDiscarder(logRotator(numToKeepStr:'30'))
+        timeout(time: 60, unit: 'MINUTES')
+        timestamps()
+    }
+
+    environment {
+        VERSION = "${params.VERSION}"
+        PRERELEASE = "${params.PRERELEASE}"
+        BRANCH = "${params.BRANCH}"
+        UPLOAD_S3_BUILD_NUMBER = "${params.UPSTREAM_BUILD_NUMBER}"
+        WORKSPACE = "${env.WORKSPACE}"
+        PROJECT = "cloudify-cli-docker"
+        UPLOAD_FOLDER = 'cloudify-cli-docker'
+        STAGE_DIR = "cloudify-cli-docker"
+        PATH= "/root/.local/bin:$PATH"
+        CFY_MANAGER_URL = 'https://raw.githubusercontent.com/cloudify-cosmo/cloudify-cli-docker'
+    }
+
+    stages {
+        stage ('build image') {
+//             withVault([configuration: configuration, vaultSecrets: secrets]) {
+                dir("${env.WORKSPACE}/${env.PROJECT}") {
+                    echo "Building Docker Image"
+                    docker build --tag cloudifyplatform/cloudify-cli:5.0.5.1 .
+
+                    echo "Uploading Image to Docker Hub"
+                    docker push cloudifyplatform/cloudify-cli:5.0.5.1
+                }
+//             }
+        }
+    }
+}
+
