@@ -206,12 +206,17 @@ def get_environment_data(name, client):
 
 
 def write_environment_outputs(name, outputs_file):
-    if not outputs_file:
+    if not (outputs_file or IS_GITHUB):
         return
     env_data = get_environment_data(name)
-    logger.info("Writing environment data to %s", outputs_file)
-    with open(outputs_file, 'w') as f:
-        json.dump(env_data, f)
+    if IS_GITHUB:
+        # Set the environment's data as an output.
+        logger.info("Setting environment data output variable: %s", env_data)
+        print("::set-output name=environment-data::%s" % json.dumps(env_data))
+    if outputs_file:
+        logger.info("Writing environment data to %s", outputs_file)
+        with open(outputs_file, 'w') as f:
+            json.dump(env_data, f)
 
 
 def prepare_invocation_params(func):
@@ -242,11 +247,6 @@ def create_environment(name, blueprint, inputs_file, outputs_file, **kwargs):
     upload_blueprint(blueprint_name, blueprint)
     _create_deployment(name, blueprint_name, inputs_file)
     install(name)
-    if IS_GITHUB:
-        # Set the environment's data as an output.
-        env_data = get_environment_data(name)
-        logger.info("Setting environment data output variable: %s", env_data)
-        print("::set-output name=environment-data::%s" % json.dumps(env_data))
     write_environment_outputs(name, outputs_file)
 
 
@@ -565,7 +565,7 @@ def main():
     create_environment_parser.add_argument('--name', required=True)
     create_environment_parser.add_argument('--blueprint', required=True)
     create_environment_parser.add_argument('--inputs', dest='inputs_file', type=optional_string)
-    create_environment_parser.add_argument('--outputs', dest='outputs_file', type=optional_string)
+    create_environment_parser.add_argument('--outputs-file', dest='outputs_file', type=optional_string)
     create_environment_parser.set_defaults(func=create_environment)
 
     delete_deployment_parser = subparsers.add_parser('delete-deployment', parents=[common_init_parent])
@@ -580,7 +580,7 @@ def main():
     integrations_parent = argparse.ArgumentParser(add_help=False, parents=[common_init_parent])
     integrations_parent.add_argument('--name')
     integrations_parent.add_argument('--invocation-params-file', type=optional_string)
-    integrations_parent.add_argument('--outputs', dest='outputs_file', type=optional_string)
+    integrations_parent.add_argument('--outputs-file', type=optional_string)
 
     terraform_parser = subparsers.add_parser('terraform', parents=[integrations_parent])
     terraform_parser.add_argument('--module')
