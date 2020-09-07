@@ -12,7 +12,6 @@ import json
 import httplib
 import logging
 import os
-import shutil
 import subprocess
 import sys
 import time
@@ -28,6 +27,7 @@ from cloudify_cli.constants import (
     DEFAULT_TENANT_NAME
 )
 from cloudify_cli.logger import get_events_logger
+from cloudify_cli.env import CLOUDIFY_WORKDIR
 from cloudify_cli.execution_events_fetcher import wait_for_execution
 from cloudify_rest_client.client import CloudifyClient, DEFAULT_PROTOCOL, SECURED_PROTOCOL
 from cloudify_rest_client.executions import Execution
@@ -83,6 +83,15 @@ def initialize(**kwargs):
     logger.info("Profile created successfully")
 
 
+def _cfy_cli(cmdline):
+    if not os.path.isdir(CLOUDIFY_WORKDIR):
+        logger.info("First-time CLI invocation; creating CLI profile")
+        initialize()
+    full_cmdline = ['cfy']
+    full_cmdline.extend(cmdline)
+    subprocess.check_call(full_cmdline)
+
+
 def with_client(func):
     """
     This wrapper is needed because of a limitation in the CLI's "pass_client" decorator:
@@ -110,17 +119,15 @@ def with_client(func):
 
 
 def upload_blueprint(name, path):
-    subprocess.check_call([
-        'cfy', 'blueprints', 'upload', path,
-        '-b', name
+    _cfy_cli([
+        'blueprints', 'upload', path, '-b', name
     ])
 
 
 @with_client
 def _create_deployment(name, blueprint_name, inputs, client):
     cmdline = [
-        'cfy', 'deployments', 'create', name,
-        '-b', blueprint_name
+        'deployments', 'create', name, '-b', blueprint_name
     ]
     # Handle the inputs: if a string - treat as a path to inputs file.
     # If a dict - treat as actual inputs and use a temporary file to hold them.
@@ -137,7 +144,7 @@ def _create_deployment(name, blueprint_name, inputs, client):
             raise Exception("Unhandled inputs type: %s" % type(inputs))
         cmdline.extend(['-i', inputs_file_name])
     try:
-        subprocess.check_call(cmdline)
+        _cfy_cli(cmdline)
     finally:
         if temp_inputs_file:
             logger.info("Deleting temporary file: %s", temp_inputs_file.name)
@@ -177,8 +184,8 @@ def uninstall(name, ignore_failure, client):
 
 @with_client
 def _delete_deployment(name, client):
-    subprocess.check_call([
-        'cfy', 'deployments', 'delete', name
+    _cfy_cli([
+        'deployments', 'delete', name
     ])
     # Wait until the deployment is actually deleted, as "cfy deployments delete"
     # is asynchronous.
