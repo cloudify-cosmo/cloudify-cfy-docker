@@ -50,10 +50,10 @@ pipeline {
 //             withVault([configuration: configuration, vaultSecrets: secrets]) {
                 dir("${env.WORKSPACE}/${env.PROJECT}") {
                     echo "Building Docker Image"
-                    docker build --tag "cloudifyplatform/cloudify-cli:5.0.5.1" .
+                    sh "docker build --tag cloudifyplatform/cloudify-cli:5.0.5.1 ."
 
                     echo "Uploading Image to Docker Hub"
-                    docker push "cloudifyplatform/cloudify-cli:5.0.5.1"
+                    sh "docker push cloudifyplatform/cloudify-cli:5.0.5.1"
                 }
 //             }
             }
