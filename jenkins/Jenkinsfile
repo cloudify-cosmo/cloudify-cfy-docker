@@ -22,10 +22,10 @@ pipeline {
     parameters {
         string(name: 'VERSION', defaultValue: '5.0.5.1', description: 'Cloudify version label, to be used in the filenames (eg. "5.1.0")')
         string(name: 'PRERELEASE', defaultValue: '.dev1', description: 'A prerelase/milestone label, to be used in the filenames (eg. ".dev1")')
-        string(name: 'BRANCH', defaultValue: 'master', description: 'Branch name for cloudify-cli-docker')
+        string(name: 'BRANCH', defaultValue: 'master', description: 'Branch name for cloudify-cfy-docker')
     }
     options {
-        checkoutToSubdirectory('cloudify-cli-docker')
+        checkoutToSubdirectory('cloudify-cfy-docker')
         buildDiscarder(logRotator(numToKeepStr:'30'))
         timeout(time: 60, unit: 'MINUTES')
         timestamps()
@@ -37,11 +37,11 @@ pipeline {
         BRANCH = "${params.BRANCH}"
         UPLOAD_S3_BUILD_NUMBER = "${params.UPSTREAM_BUILD_NUMBER}"
         WORKSPACE = "${env.WORKSPACE}"
-        PROJECT = "cloudify-cli-docker"
-        UPLOAD_FOLDER = 'cloudify-cli-docker'
-        STAGE_DIR = "cloudify-cli-docker"
+        PROJECT = "cloudify-cfy-docker"
+        UPLOAD_FOLDER = 'cloudify-cfy-docker'
+        STAGE_DIR = "cloudify-cfy-docker"
         PATH= "/root/.local/bin:$PATH"
-        CFY_MANAGER_URL = 'https://raw.githubusercontent.com/cloudify-cosmo/cloudify-cli-docker'
+        CFY_MANAGER_URL = 'https://raw.githubusercontent.com/cloudify-cosmo/cloudify-cfy-docker'
     }
 
     stages {
@@ -49,10 +49,10 @@ pipeline {
 //             withVault([configuration: configuration, vaultSecrets: secrets]) {
                 dir("${env.WORKSPACE}/${env.PROJECT}") {
                     echo "Building Docker Image"
-                    docker build --tag cloudifyplatform/cloudify-cli:5.0.5.1 .
+                    docker build --tag "cloudifyplatform/cloudify-cli:5.0.5.1" .
 
                     echo "Uploading Image to Docker Hub"
-                    docker push cloudifyplatform/cloudify-cli:5.0.5.1
+                    docker push "cloudifyplatform/cloudify-cli:5.0.5.1"
                 }
 //             }
         }
