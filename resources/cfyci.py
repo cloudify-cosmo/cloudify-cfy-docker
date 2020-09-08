@@ -10,12 +10,14 @@ from __future__ import print_function
 import argparse
 import json
 import httplib
+import io
 import logging
 import os
 import subprocess
 import sys
 import time
 import tempfile
+import urllib3
 
 from string import Template
 
@@ -27,7 +29,7 @@ from cloudify_cli.constants import (
     DEFAULT_TENANT_NAME
 )
 from cloudify_cli.logger import get_events_logger
-from cloudify_cli.env import CLOUDIFY_WORKDIR
+from cloudify_cli.env import CLOUDIFY_WORKDIR, get_ssl_trust_all
 from cloudify_cli.execution_events_fetcher import wait_for_execution
 from cloudify_rest_client.client import CloudifyClient, DEFAULT_PROTOCOL, SECURED_PROTOCOL
 from cloudify_rest_client.executions import Execution
@@ -60,36 +62,36 @@ CLOUDIFY_TENANT_NAME_ENV = "CLOUDIFY_TENANT_NAME"
 
 def read_json_or_yaml(path):
     # We assume here, of course, that any JSON file is also a YAML file.
-    with open(path, 'r') as f:
+    with io.open(path, 'r', encoding='UTF-8') as f:
         return yaml.load(f)
 
 
-def initialize(**kwargs):
-    # Calls the CLI to set a profile. This should normally only happen once.
-    manager_host = os.environ[CLOUDIFY_HOST_ENV]
-    manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
-    manager_tenant = os.environ.get(CLOUDIFY_TENANT_NAME_ENV, DEFAULT_TENANT_NAME)
-    use_ssl = os.environ.get(CLOUDIFY_SSL_ENV, '').lower() != 'false'
-
-    cmdline = [
-        'cfy', 'profile', 'use', manager_host,
-        '-t', manager_tenant
-    ]
-    if use_ssl:
-        cmdline.append('--ssl')
-
-    logger.info("Initializing; host=%s, user=%s, tenant=%s", manager_host, manager_user, manager_tenant)
-    subprocess.check_call(cmdline)
-    logger.info("Profile created successfully")
-
-
 def _cfy_cli(cmdline):
+    env = dict(os.environ)
+    # If "trust all" is in effect, then disable this warning and
+    # assume the user knows what they're doing.
+    if get_ssl_trust_all():
+        env['PYTHONWARNINGS'] = "ignore:Unverified HTTPS request"
     if not os.path.isdir(CLOUDIFY_WORKDIR):
         logger.info("First-time CLI invocation; creating CLI profile")
-        initialize()
+        manager_host = os.environ[CLOUDIFY_HOST_ENV]
+        manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
+        manager_tenant = os.environ.get(CLOUDIFY_TENANT_NAME_ENV, DEFAULT_TENANT_NAME)
+        use_ssl = os.environ.get(CLOUDIFY_SSL_ENV, '').lower() != 'false'
+
+        init_cmdline = [
+            'cfy', 'profile', 'use', manager_host,
+            '-t', manager_tenant
+        ]
+        if use_ssl:
+            init_cmdline.append('--ssl')
+
+        logger.info("Initializing; host=%s, user=%s, tenant=%s", manager_host, manager_user, manager_tenant)
+        subprocess.check_call(init_cmdline, env=env)
+        logger.info("Profile created successfully")
     full_cmdline = ['cfy']
     full_cmdline.extend(cmdline)
-    subprocess.check_call(full_cmdline)
+    subprocess.check_call(full_cmdline, env=env)
 
 
 def with_client(func):
@@ -105,12 +107,16 @@ def with_client(func):
         manager_password = os.environ[CLOUDIFY_PASSWORD_ENV]
         manager_tenant = os.environ.get(CLOUDIFY_TENANT_NAME_ENV, DEFAULT_TENANT_NAME)
         use_ssl = os.environ.get(CLOUDIFY_SSL_ENV, '').lower() != 'false'
+        ssl_trust_all = get_ssl_trust_all()
+        if ssl_trust_all:
+            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         client = CloudifyClient(
             host=manager_host,
             username=manager_user,
             password=manager_password,
             tenant=manager_tenant,
-            protocol=SECURED_PROTOCOL if use_ssl else DEFAULT_PROTOCOL
+            protocol=SECURED_PROTOCOL if use_ssl else DEFAULT_PROTOCOL,
+            trust_all=ssl_trust_all
         )
         kwargs['client'] = client
         return func(*args, **kwargs)
@@ -207,8 +213,8 @@ def get_environment_data(name, client):
     capabilities = client.deployments.capabilities.get(name)
     return {
         "deployment_id": name,
-        "outputs": outputs,
-        "capabilities": capabilities
+        "outputs": outputs['outputs'],
+        "capabilities": capabilities['capabilities']
     }
 
 
@@ -222,7 +228,7 @@ def write_environment_outputs(name, outputs_file):
         print("::set-output name=environment-data::%s" % json.dumps(env_data))
     if outputs_file:
         logger.info("Writing environment data to %s", outputs_file)
-        with open(outputs_file, 'w') as f:
+        with io.open(outputs_file, 'w', encoding='UTF-8') as f:
             json.dump(env_data, f)
 
 
@@ -364,10 +370,15 @@ class CfyARMIntegration(CfyIntegration):
 
 
 class CfyCFNIntegration(CfyIntegration):
-    def __init__(self, name, outputs_file, stack_name, template_url, parameters_file, credentials_file, region_name):
+    def __init__(self, name, outputs_file, stack_name, template_url, bucket_name,
+                 resource_name, template_file, parameters_file, credentials_file,
+                 region_name):
         CfyIntegration.__init__(self, name, outputs_file)
         self._stack_name = stack_name
         self._template_url = template_url
+        self._bucket_name = bucket_name
+        self._resource_name = resource_name
+        self._template_file = template_file
         self._parameters_file = parameters_file
         self._credentials_file = credentials_file
         self._region_name = region_name
@@ -398,7 +409,16 @@ class CfyCFNIntegration(CfyIntegration):
                 'ParameterKey': key,
                 'ParameterValue': value
             } for key, value in parameters.iteritems()]
-        inputs['template_url'] = self._template_url
+        if self._template_url:
+            inputs['template_url'] = self._template_url
+        elif self._template_file:
+            with io.open(self._template_file, 'r', encoding='UTF-8') as f:
+                inputs['template_body'] = f.read()
+        elif self._bucket_name and self._resource_name:
+            # TODO: Add this to the plugin?
+            inputs['template_url'] = "https://%s.s3.amazonaws.com/%s" % (self._bucket_name, self._resource_name)
+        else:
+            raise Exception("Either template URL, template body, or combination of bucket name and resource name, must be provided")
         return inputs
 
 
@@ -462,7 +482,7 @@ class CfyKubernetesIntegration(CfyIntegration):
             api_key = self._token
             if not api_key:
                 logger.info("Reading API token from %s", self._token_file)
-                with open(self._token_file, 'r') as f:
+                with io.open(self._token_file, 'r', encoding='UTF-8') as f:
                     api_key = f.read()
             else:
                 logger.info("Using API token provided as string")
@@ -505,11 +525,11 @@ def arm(
 
 
 def cfn(
-        name, outputs_file, stack_name, template_url, parameters_file, credentials_file,
-        region_name, **kwargs):
+        name, outputs_file, stack_name, template_url, bucket_name, resource_name,
+        template_file, parameters_file, credentials_file, region_name, **kwargs):
     CfyCFNIntegration(
-        name, outputs_file, stack_name, template_url, parameters_file,
-        credentials_file, region_name).execute()
+        name, outputs_file, stack_name, template_url, bucket_name, resource_name,
+        template_file, parameters_file, credentials_file, region_name).execute()
 
 
 def kubernetes(
@@ -555,14 +575,16 @@ def main():
             return False
         raise Exception("Unrecognized boolean value: '%s'" % s)
 
+    # On first glance, you may think that we should use mutually exclusive arguments
+    # groups. Yeah, I know. However, note that we have to allow all argument combinations,
+    # to pass through the parser, because the caller is likely to provide all parameters,
+    # with some of them blank.
+
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
 
-    init_parser = subparsers.add_parser('init')
-    init_parser.set_defaults(func=initialize)
-
+    # Currently empty (may add something to it soon...)
     common_init_parent = argparse.ArgumentParser(add_help=False)
-    common_init_parent.add_argument('--init', action='store_true', default=False)
 
     create_deployment_parser = subparsers.add_parser('create-deployment', parents=[common_init_parent])
     create_deployment_parser.add_argument('--name', required=True)
@@ -608,7 +630,10 @@ def main():
 
     cfn_parser = subparsers.add_parser('cfn', parents=[integrations_parent])
     cfn_parser.add_argument('--stack-name', required=True)
-    cfn_parser.add_argument('--template-url', required=True)
+    cfn_parser.add_argument('--template-url')
+    cfn_parser.add_argument('--bucket-name')
+    cfn_parser.add_argument('--resource-name')
+    cfn_parser.add_argument('--template-file')
     cfn_parser.add_argument('--parameters-file', type=optional_string)
     cfn_parser.add_argument('--credentials-file', type=optional_string)
     cfn_parser.add_argument('--region-name', type=optional_string)
@@ -633,10 +658,6 @@ def main():
 
     args = parser.parse_args()
     vars_map = vars(args)
-
-    # If "--init" provided, then initialize the CLI profile.
-    if vars_map.get('init', False):
-        initialize()
 
     # GitHub Actions currently don't allow passing environment variables
     # (such as "GITHUB_RUN_ID", which is convenient for uniqueness) as
