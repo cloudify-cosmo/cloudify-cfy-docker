@@ -232,7 +232,7 @@ def write_environment_outputs(name, outputs_file):
     if outputs_file:
         logger.info("Writing environment data to %s", outputs_file)
         with open(outputs_file, 'w') as f:
-            json.dump(env_data, f)
+            json.dump(env_data, f, indent=4)
 
 
 def prepare_invocation_params(func):
