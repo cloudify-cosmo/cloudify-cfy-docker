@@ -70,14 +70,14 @@ def _cfy_cli(cmdline):
     env = dict(os.environ)
     # If "trust all" is in effect, then disable this warning and
     # assume the user knows what they're doing.
-    if get_ssl_trust_all():
+    use_ssl = os.environ.get(CLOUDIFY_SSL_ENV, '').lower() != 'false'
+    if use_ssl and get_ssl_trust_all():
         env['PYTHONWARNINGS'] = "ignore:Unverified HTTPS request"
     if not os.path.isdir(CLOUDIFY_WORKDIR):
         logger.info("First-time CLI invocation; creating CLI profile")
         manager_host = os.environ[CLOUDIFY_HOST_ENV]
         manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
         manager_tenant = os.environ.get(CLOUDIFY_TENANT_NAME_ENV, DEFAULT_TENANT_NAME)
-        use_ssl = os.environ.get(CLOUDIFY_SSL_ENV, '').lower() != 'false'
 
         init_cmdline = [
             'cfy', 'profile', 'use', manager_host,
@@ -91,6 +91,7 @@ def _cfy_cli(cmdline):
         logger.info("Profile created successfully")
     full_cmdline = ['cfy']
     full_cmdline.extend(cmdline)
+    logger.info("Running: %s", full_cmdline)
     subprocess.check_call(full_cmdline, env=env)
 
 
@@ -108,7 +109,9 @@ def with_client(func):
         manager_tenant = os.environ.get(CLOUDIFY_TENANT_NAME_ENV, DEFAULT_TENANT_NAME)
         use_ssl = os.environ.get(CLOUDIFY_SSL_ENV, '').lower() != 'false'
         ssl_trust_all = get_ssl_trust_all()
-        if ssl_trust_all:
+        # If user wants to trust all certificates, then disable the warning
+        # about it and assume (and hope) they know what they're doing.
+        if use_ssl and ssl_trust_all:
             urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
         client = CloudifyClient(
             host=manager_host,
@@ -228,7 +231,7 @@ def write_environment_outputs(name, outputs_file):
         print("::set-output name=environment-data::%s" % json.dumps(env_data))
     if outputs_file:
         logger.info("Writing environment data to %s", outputs_file)
-        with io.open(outputs_file, 'w', encoding='UTF-8') as f:
+        with open(outputs_file, 'w') as f:
             json.dump(env_data, f)
 
 
@@ -402,21 +405,31 @@ class CfyCFNIntegration(CfyIntegration):
         inputs = dict(aws_creds)
         if self._region_name:
             inputs['aws_region_name'] = self._region_name
-        inputs['stack_name'] = self._stack_name
+
+        resource_config_kwargs = {}
+        inputs['resource_config'] = {
+            'kwargs': resource_config_kwargs
+        }
+
+        resource_config_kwargs['StackName'] = self._stack_name
         if self._parameters_file:
             parameters = read_json_or_yaml(self._parameters_file)
-            inputs['parameters'] = [{
+            resource_config_kwargs['Parameters'] = [{
                 'ParameterKey': key,
                 'ParameterValue': value
             } for key, value in parameters.iteritems()]
         if self._template_url:
-            inputs['template_url'] = self._template_url
+            logger.info("Will use template from %s", self._template_url)
+            resource_config_kwargs['TemplateURL'] = self._template_url
         elif self._template_file:
+            logger.info("Reading stack from %s", self._template_file)
             with io.open(self._template_file, 'r', encoding='UTF-8') as f:
-                inputs['template_body'] = f.read()
+                resource_config_kwargs['TemplateBody'] = f.read()
         elif self._bucket_name and self._resource_name:
             # TODO: Add this to the plugin?
-            inputs['template_url'] = "https://%s.s3.amazonaws.com/%s" % (self._bucket_name, self._resource_name)
+            template_url = "https://%s.s3.amazonaws.com/%s" % (self._bucket_name, self._resource_name)
+            logger.info("Concluded URL for stack file: %s", template_url)
+            resource_config_kwargs['TemplateURL'] = template_url
         else:
             raise Exception("Either template URL, template body, or combination of bucket name and resource name, must be provided")
         return inputs
@@ -630,10 +643,10 @@ def main():
 
     cfn_parser = subparsers.add_parser('cfn', parents=[integrations_parent])
     cfn_parser.add_argument('--stack-name', required=True)
-    cfn_parser.add_argument('--template-url')
-    cfn_parser.add_argument('--bucket-name')
-    cfn_parser.add_argument('--resource-name')
-    cfn_parser.add_argument('--template-file')
+    cfn_parser.add_argument('--template-url', type=optional_string)
+    cfn_parser.add_argument('--bucket-name', type=optional_string)
+    cfn_parser.add_argument('--resource-name', type=optional_string)
+    cfn_parser.add_argument('--template-file', type=optional_string)
     cfn_parser.add_argument('--parameters-file', type=optional_string)
     cfn_parser.add_argument('--credentials-file', type=optional_string)
     cfn_parser.add_argument('--region-name', type=optional_string)
