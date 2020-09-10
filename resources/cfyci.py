@@ -35,7 +35,8 @@ from cloudify_rest_client.client import CloudifyClient, DEFAULT_PROTOCOL, SECURE
 from cloudify_rest_client.executions import Execution
 from cloudify_rest_client.exceptions import CloudifyClientError
 
-logging.basicConfig(stream=sys.stderr, level=logging.INFO, format="%(message)s")
+logger_debug = str(os.environ.get('CFYCI_DEBUG', False)).lower() == 'true'
+logging.basicConfig(stream=sys.stderr, level=logging.DEBUG if logger_debug else logging.INFO, format="%(message)s")
 logger = logging.getLogger('cfy-ci')
 
 IS_GITHUB = 'GITHUB_RUN_ID' in os.environ
@@ -283,8 +284,16 @@ class CfyIntegration(object):
     @classmethod
     def parse_environment_mapping(cls, str_list):
         mapping = {}
+        # On GitHub, we're going to receive a list containing
+        # a single item, and that single item is space-delimited.
+        # That's due to how GitHub quotes arguments. So...
+        logger.debug("str_list=(%s) %s", type(str_list), str_list)
+
+        if IS_GITHUB and str_list:
+            str_list = str_list[0].split()
         str_list = str_list or []
         for item in str_list:
+            logger.debug("item=%s", item)
             if "=" in item:
                 source, target = item.split("=")
             else:
