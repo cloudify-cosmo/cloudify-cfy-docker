@@ -522,10 +522,14 @@ class CfyKubernetesIntegration(CfyIntegration):
         inputs = {
             "client_config": client_config,
             "definition": read_json_or_yaml(self._app_definition_file),
-            "options": options,
-            "validate_status": self._validate_status,
-            "allow_node_redefinition": self._allow_node_redefinition
+            "options": options
         }
+        for x, y in [
+            (self._validate_status, "validate_status"),
+            (self._allow_node_redefinition, "allow_node_redefinition")
+        ]:
+            if x is not None:
+                inputs[y] = x
         return inputs
 
 
