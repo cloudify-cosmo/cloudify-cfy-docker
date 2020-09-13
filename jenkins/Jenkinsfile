@@ -33,12 +33,12 @@ pipeline {
 
     stages {
         stage ('build image') {
+            when { branch pattern: ".+-build", comparator: "REGEXP"}
+            environment {
+                BRANCH_BUILD_NUMBER = "${env.BRANCH_NAME.split('-')[0]}"
+            }
             steps {
                 container('dind-daemon') {
-                    when { branch pattern: ".+-build", comparator: "REGEXP"}
-                    environment {
-                        BRANCH_BUILD_NUMBER = "${env.BRANCH_NAME.split('-')[0]}"
-                    }
                     withVault([configuration: configuration, vaultSecrets: secrets]) {
                         dir("${env.WORKSPACE}/${env.PROJECT}") {
                             echo "Docker Login"
