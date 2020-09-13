@@ -17,15 +17,7 @@ pipeline {
             yamlFile 'jenkins/build-pod.yaml'
         }
     }
-//     agent {
-//         node 'docker'
-//     }
 
-    parameters {
-        string(name: 'VERSION', defaultValue: '5.0.5.1', description: 'Cloudify version label, to be used in the filenames (eg. "5.1.0")')
-        string(name: 'PRERELEASE', defaultValue: '.dev1', description: 'A prerelase/milestone label, to be used in the filenames (eg. ".dev1")')
-        string(name: 'BRANCH', defaultValue: 'master', description: 'Branch name for cloudify-cfy-docker')
-    }
     options {
         checkoutToSubdirectory('cloudify-cfy-docker')
         buildDiscarder(logRotator(numToKeepStr:'30'))
@@ -34,16 +26,8 @@ pipeline {
     }
 
     environment {
-        VERSION = "${params.VERSION}"
-        PRERELEASE = "${params.PRERELEASE}"
-        BRANCH = "${params.BRANCH}"
-        UPLOAD_S3_BUILD_NUMBER = "${params.UPSTREAM_BUILD_NUMBER}"
         WORKSPACE = "${env.WORKSPACE}"
         PROJECT = "cloudify-cfy-docker"
-        UPLOAD_FOLDER = 'cloudify-cfy-docker'
-        STAGE_DIR = "cloudify-cfy-docker"
-        PATH= "/root/.local/bin:$PATH"
-        CFY_MANAGER_URL = 'https://raw.githubusercontent.com/cloudify-cosmo/cloudify-cfy-docker'
         DOCKER_HOST = '127.0.0.1'
     }
 
