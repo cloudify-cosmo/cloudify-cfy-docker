@@ -46,15 +46,15 @@ pipeline {
     stages {
         stage ('build image') {
             steps {
-             withVault([configuration: configuration, vaultSecrets: secrets]) {
-                dir("${env.WORKSPACE}/${env.PROJECT}") {
-                    echo "Building Docker Image"
-                    sh "docker build --tag cloudifyplatform/cloudify-cli:5.0.5.1 ."
+                withVault([configuration: configuration, vaultSecrets: secrets]) {
+                    dir("${env.WORKSPACE}/${env.PROJECT}") {
+                        echo "Building Docker Image"
+                        sh "docker build --tag cloudifyplatform/cloudify-cli:5.0.5.1 ."
 
-                    echo "Uploading Image to Docker Hub"
-                    sh "docker push cloudifyplatform/cloudify-cli:5.0.5.1"
+                        echo "Uploading Image to Docker Hub"
+                        sh "docker push cloudifyplatform/cloudify-cli:5.0.5.1"
+                    }
                 }
-//             }
             }
         }
     }
