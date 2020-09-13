@@ -49,7 +49,7 @@ pipeline {
     stages {
         stage ('build image') {
             steps {
-                container('docker')
+                container('docker') {
 //                 when { branch pattern: ".+-build", comparator: "REGEXP"}
                     withVault([configuration: configuration, vaultSecrets: secrets]) {
                         dir("${env.WORKSPACE}/${env.PROJECT}") {
