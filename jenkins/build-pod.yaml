@@ -2,7 +2,7 @@ apiVersion: v1
 kind: Pod
 spec:
   containers:
-  - name: py36
+  - name: docker
     image: docker
     command:
     - cat
