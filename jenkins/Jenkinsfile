@@ -1,7 +1,7 @@
 def secrets = [
     [path: 'secret/jenkins/dockerhub', engineVersion: 2, secretValues: [
-            [envVar: 'OS_USERNAME', vaultKey: 'username'],
-            [envVar: 'OS_PASSWORD', vaultKey: 'password']
+            [envVar: 'DOCKERHUB_USERNAME', vaultKey: 'username'],
+            [envVar: 'DOCKERHUB_PASSWORD', vaultKey: 'password']
         ]
     ],
 ]
@@ -51,6 +51,9 @@ pipeline {
                     dir("${env.WORKSPACE}/${env.PROJECT}") {
                         echo "Building Docker Image"
                         sh "docker build --tag cloudifyplatform/cloudify-cli:5.0.5.1 ."
+
+                        echo "Docker Login"
+                        sh "echo $DOCKER_PASSWORD | docker login -u=\"$DOCKER_USERNAME\" --password-stdin"
 
                         echo "Uploading Image to Docker Hub"
                         sh "docker push cloudifyplatform/cloudify-cli:5.0.5.1"
