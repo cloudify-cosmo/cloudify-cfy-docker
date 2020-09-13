@@ -46,8 +46,8 @@ pipeline {
                             echo "Uploading Image to Docker Hub"
                             sh '''
                             #!/bin/bash
-                            docker login -u="$DOCKER_USERNAME" -p="$DOCKER_PASSWORD"
                             docker build --tag cloudifyplatform/cloudify-cli:$BRANCH_BUILD_NUMBER .
+                            docker login -u="$DOCKER_USERNAME" -p="$DOCKER_PASSWORD"
                             docker push cloudifyplatform/cloudify-cli:$BRANCH_BUILD_NUMBER
                             '''
                         }
