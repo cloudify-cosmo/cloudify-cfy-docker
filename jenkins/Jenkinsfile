@@ -1,10 +1,9 @@
 def secrets = [
-    [
-        path: 'secret/jenkins/docker', engineVersion: 2, secretValues: [
-            [envVar: 'DOCKER_USERNAME', vaultKey: 'docker_username'],
-            [envVar: 'DOCKER_PASSWORD', vaultKey: 'docker_password']
+    [path: 'secret/jenkins/dockerhub', engineVersion: 2, secretValues: [
+            [envVar: 'OS_USERNAME', vaultKey: 'username'],
+            [envVar: 'OS_PASSWORD', vaultKey: 'password']
         ]
-    ]
+    ],
 ]
 
 def configuration = [vaultUrl: "${env.VAULT_URL}",  vaultCredentialId: 'vault-app-role', engineVersion: 2]
@@ -47,7 +46,7 @@ pipeline {
     stages {
         stage ('build image') {
             steps {
-//             withVault([configuration: configuration, vaultSecrets: secrets]) {
+             withVault([configuration: configuration, vaultSecrets: secrets]) {
                 dir("${env.WORKSPACE}/${env.PROJECT}") {
                     echo "Building Docker Image"
                     sh "docker build --tag cloudifyplatform/cloudify-cli:5.0.5.1 ."
