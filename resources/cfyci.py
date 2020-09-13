@@ -26,6 +26,7 @@ import yaml
 from cloudify_cli.constants import (
     CLOUDIFY_USERNAME_ENV,
     CLOUDIFY_PASSWORD_ENV,
+    CLOUDIFY_TENANT_ENV,
     DEFAULT_TENANT_NAME
 )
 from cloudify_cli.logger import get_events_logger
@@ -36,7 +37,10 @@ from cloudify_rest_client.executions import Execution
 from cloudify_rest_client.exceptions import CloudifyClientError
 
 logger_debug = str(os.environ.get('CFYCI_DEBUG', False)).lower() == 'true'
-logging.basicConfig(stream=sys.stderr, level=logging.DEBUG if logger_debug else logging.INFO, format="%(message)s")
+logging.basicConfig(
+    stream=sys.stderr,
+    level=logging.DEBUG if logger_debug else logging.INFO,
+    format="%(message)s")
 logger = logging.getLogger('cfy-ci')
 
 IS_GITHUB = 'GITHUB_RUN_ID' in os.environ
@@ -44,21 +48,15 @@ IS_GITHUB = 'GITHUB_RUN_ID' in os.environ
 OMITTED_ARG = "-"
 CLOUDIFY_HOST_ENV = "CLOUDIFY_HOST"
 CLOUDIFY_SSL_ENV = "CLOUDIFY_SSL"
-# Theoretically I would have liked to use the standard environment variable
-# for this (defined in cloudify_cli.constants; "CLOUDIFY_TENANT"), however that
-# ends up triggering a bug in the CLI.
-#
-# When we initialize the profile (in the initialize() function), we must do so
-# with the tenant name injected into the profile; we must not leave it empty.
-# Otherwise, REST calls would fail because @pass_client wouldn't pass a tenant
-# to the REST call.
-#
-# However, if we inject the tenant to the profile, and the "CLOUDIFY_TENANT" environment
-# variable is defined, then we get an error message that the tenant is defined
-# in both the profile and an environment variable.
-#
-# To work around that, I invented a new environment variable.
-CLOUDIFY_TENANT_NAME_ENV = "CLOUDIFY_TENANT_NAME"
+DEPLOYMENT_DELETE_TIMEOUT_DEFAULT = 120
+# Time, in seconds, to wait for deployment deletion
+DEPLOYMENT_DELETE_TIMEOUT = int(os.environ.get(
+    'DEPLOYMENT_DELETE_TIMEOUT', str(DEPLOYMENT_DELETE_TIMEOUT_DEFAULT)))
+
+TERRAFORM_INTEGRATION_BLUEPRINT = 'cfy-terraform-1.0'
+AZURE_ARM_INTEGRATION_BLUEPRINT = 'cfy-azure-arm-1.0'
+CLOUDFORMATION_INTEGRATION_BLUEPRINT = 'cfy-cloudformation-1.0'
+KUBERNETES_INTEGRATION_BLUEPRINT = 'cfy-kubernetes-1.0'
 
 
 def read_json_or_yaml(path):
@@ -78,7 +76,7 @@ def _cfy_cli(cmdline):
         logger.info("First-time CLI invocation; creating CLI profile")
         manager_host = os.environ[CLOUDIFY_HOST_ENV]
         manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
-        manager_tenant = os.environ.get(CLOUDIFY_TENANT_NAME_ENV, DEFAULT_TENANT_NAME)
+        manager_tenant = os.environ.get(CLOUDIFY_TENANT_ENV, DEFAULT_TENANT_NAME)
 
         init_cmdline = [
             'cfy', 'profile', 'use', manager_host,
@@ -107,7 +105,7 @@ def with_client(func):
         manager_host = os.environ[CLOUDIFY_HOST_ENV]
         manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
         manager_password = os.environ[CLOUDIFY_PASSWORD_ENV]
-        manager_tenant = os.environ.get(CLOUDIFY_TENANT_NAME_ENV, DEFAULT_TENANT_NAME)
+        manager_tenant = os.environ.get(CLOUDIFY_TENANT_ENV, DEFAULT_TENANT_NAME)
         use_ssl = os.environ.get(CLOUDIFY_SSL_ENV, '').lower() != 'false'
         ssl_trust_all = get_ssl_trust_all()
         # If user wants to trust all certificates, then disable the warning
@@ -134,6 +132,16 @@ def upload_blueprint(name, path):
     ])
 
 
+def wait_for_and_validate_execution(client, execution):
+    execution = wait_for_execution(
+        client, execution, get_events_logger(False), True, timeout=None, logger=logger)
+    if execution.status != Execution.TERMINATED:
+        raise Exception(
+            "Unexpected status of execution %s: %s (expected: %s)" %
+            (execution.id, execution.status, Execution.TERMINATED))
+    return execution
+
+
 @with_client
 def _create_deployment(name, blueprint_name, inputs, client):
     cmdline = [
@@ -151,7 +159,8 @@ def _create_deployment(name, blueprint_name, inputs, client):
         elif type(inputs) == str:
             inputs_file_name = inputs
         else:
-            raise Exception("Unhandled inputs type: %s" % type(inputs))
+            raise Exception("Unhandled inputs type: %s; should be either a dictionary (containing inputs) "
+                            "or a string (containing a path to a file)" % type(inputs))
         cmdline.extend(['-i', inputs_file_name])
     try:
         _cfy_cli(cmdline)
@@ -164,20 +173,16 @@ def _create_deployment(name, blueprint_name, inputs, client):
     # we need to look it up (see https://cloudifysource.atlassian.net/browse/CY-2385).
     executions = client.executions.list(deployment_id=name)
     if len(executions) != 1:
-        raise Exception("Unexpected number of executions for deployment '%s': %d" % (name, len(executions)))
-    execution = wait_for_execution(
-        client, executions[0], get_events_logger(False), True, timeout=None, logger=logger)
-    if execution.status != Execution.TERMINATED:
-        raise Exception("Unexpected status of execution %s: %s" % (execution.id, execution.status))
+        raise Exception("Unexpected number of executions for deployment "
+                        "'%s': %d (should be 1)" % (name, len(executions)))
+    wait_for_and_validate_execution(client, executions[0])
 
 
 def _start_and_follow_execution(client, deployment_id, workflow_id, parameters):
     # Use REST here, because "cfy executions start" ends with a zero
     # even if the execution fails.
     execution = client.executions.start(deployment_id, workflow_id, parameters)
-    execution = wait_for_execution(client, execution, get_events_logger(False), True, timeout=None, logger=logger)
-    if execution.status != Execution.TERMINATED:
-        raise Exception("Unexpected status of execution %s: %s" % (execution.id, execution.status))
+    wait_for_and_validate_execution(client, execution)
 
 
 @with_client
@@ -199,16 +204,24 @@ def _delete_deployment(name, client):
     ])
     # Wait until the deployment is actually deleted, as "cfy deployments delete"
     # is asynchronous.
-    while True:
+    ended = False
+    initial_time = time.time()
+    while time.time() < initial_time + DEPLOYMENT_DELETE_TIMEOUT:
+        logger.info(
+            "Waiting for the deployment to be deleted (timeout in %d seconds)...",
+            initial_time + DEPLOYMENT_DELETE_TIMEOUT - time.time())
         try:
-            logger.info("Waiting for the deployment to be deleted...")
             client.deployments.get(name)
             time.sleep(1)
         except CloudifyClientError as ex:
             if ex.status_code == httplib.NOT_FOUND:
-                logger.info("Deployment ended")
+                logger.info("Deployment deleted")
+                ended = True
                 break
             raise
+
+    if not ended:
+        raise Exception("Deployment did not end within %d seconds" % DEPLOYMENT_DELETE_TIMEOUT)
 
 
 @with_client
@@ -234,23 +247,6 @@ def write_environment_outputs(name, outputs_file):
         logger.info("Writing environment data to %s", outputs_file)
         with open(outputs_file, 'w') as f:
             json.dump(env_data, f, indent=4)
-
-
-def prepare_invocation_params(func):
-    def wrapper(*args, **kwargs):
-        # kwargs.pop('func', None)
-        # invocation_params_file = kwargs.pop("invocation_params_file", None)
-        # invocation_params = {}
-        # if invocation_params_file:
-        #     invocation_params = read_json_or_yaml(invocation_params_file)
-        # for arg_name, arg_value in kwargs.iteritems():
-        #     if arg_value is not None:
-        #         invocation_params[arg_name] = arg_value
-        # print(invocation_params)
-        # func(*args, **invocation_params)
-        func(*args, **kwargs)
-
-    return wrapper
 
 
 def create_deployment(name, blueprint, inputs_file, **kwargs):
@@ -309,7 +305,7 @@ class CfyIntegration(object):
 
 
 class CfyTerraformIntegration(CfyIntegration):
-    def __init__(self, name, outputs_file, module, variables, environment, environment_mapping):
+    def __init__(self, name, outputs_file, module, variables, environment, environment_mapping, **kwargs):
         CfyIntegration.__init__(self, name, outputs_file)
         self._module = module
         self._variables = variables
@@ -318,7 +314,7 @@ class CfyTerraformIntegration(CfyIntegration):
             environment_mapping)
 
     def blueprint_name(self):
-        return 'cfy-terraform-1.0'
+        return TERRAFORM_INTEGRATION_BLUEPRINT
 
     def prepare_inputs(self):
         inputs = {
@@ -346,7 +342,8 @@ class CfyTerraformIntegration(CfyIntegration):
 
 
 class CfyARMIntegration(CfyIntegration):
-    def __init__(self, name, outputs_file, resource_group, template_file, parameters_file, credentials_file, location):
+    def __init__(self, name, outputs_file, resource_group, template_file, parameters_file, credentials_file, location,
+                 **kwargs):
         CfyIntegration.__init__(self, name, outputs_file)
         self._resource_group = resource_group
         self._template_file = template_file
@@ -355,7 +352,7 @@ class CfyARMIntegration(CfyIntegration):
         self._location = location
 
     def blueprint_name(self):
-        return 'cfy-azure-arm-1.0'
+        return AZURE_ARM_INTEGRATION_BLUEPRINT
 
     def prepare_inputs(self):
         if self._credentials_file:
@@ -384,7 +381,7 @@ class CfyARMIntegration(CfyIntegration):
 class CfyCFNIntegration(CfyIntegration):
     def __init__(self, name, outputs_file, stack_name, template_url, bucket_name,
                  resource_name, template_file, parameters_file, credentials_file,
-                 region_name):
+                 region_name, **kwargs):
         CfyIntegration.__init__(self, name, outputs_file)
         self._stack_name = stack_name
         self._template_url = template_url
@@ -396,7 +393,7 @@ class CfyCFNIntegration(CfyIntegration):
         self._region_name = region_name
 
     def blueprint_name(self):
-        return 'cfy-cloudformation-1.0'
+        return CLOUDFORMATION_INTEGRATION_BLUEPRINT
 
     def prepare_inputs(self):
         if self._credentials_file:
@@ -448,7 +445,8 @@ class CfyKubernetesIntegration(CfyIntegration):
     def __init__(
             self, name, outputs_file, gcp_credentials_file, token, token_file, master_host,
             namespace, app_definition_file, ca_cert_file, ssl_cert_file, ssl_key_file,
-            skip_ssl_verification, other_options_file, validate_status, allow_node_redefinition, debug
+            skip_ssl_verification, other_options_file, validate_status, allow_node_redefinition, debug,
+            **kwargs
     ):
         CfyIntegration.__init__(self, name, outputs_file)
         self._gcp_credentials_file = gcp_credentials_file
@@ -467,7 +465,7 @@ class CfyKubernetesIntegration(CfyIntegration):
         self._debug = debug
 
     def blueprint_name(self):
-        return 'cfy-kubernetes-1.0'
+        return KUBERNETES_INTEGRATION_BLUEPRINT
 
     def prepare_inputs(self):
         if sum(1 for x in [
@@ -510,12 +508,14 @@ class CfyKubernetesIntegration(CfyIntegration):
                 logger.info("Using API token provided as string")
             api_options["api_key"] = api_key
 
-        if self._ca_cert_file:
-            api_options["ssl_ca_cert"] = self._ca_cert_file
-        if self._ssl_cert_file:
-            api_options["cert_file"] = self._ssl_cert_file
-        if self._ssl_key_file:
-            api_options["key_file"] = self._ssl_key_file
+        for x, y in [
+            (self._ca_cert_file, "ssl_ca_cert"),
+            (self._ssl_cert_file, "cert_file"),
+            (self._ssl_key_file, "key_file")
+        ]:
+            if x:
+                api_options[y] = x
+
         if self._namespace:
             options["namespace"] = self._namespace
 
@@ -533,40 +533,20 @@ class CfyKubernetesIntegration(CfyIntegration):
         return inputs
 
 
-@prepare_invocation_params
-def terraform(
-        name, module, outputs_file, variables, environment,
-        environment_mapping, **kwargs):
-    CfyTerraformIntegration(
-        name, outputs_file, module, variables, environment,
-        environment_mapping).execute()
+def terraform(**kwargs):
+    CfyTerraformIntegration(**kwargs).execute()
 
 
-def arm(
-        name, resource_group, template_file, parameters_file, credentials_file,
-        location, outputs_file, **kwargs):
-    CfyARMIntegration(
-        name, outputs_file, resource_group, template_file, parameters_file,
-        credentials_file, location).execute()
+def arm(**kwargs):
+    CfyARMIntegration(**kwargs).execute()
 
 
-def cfn(
-        name, outputs_file, stack_name, template_url, bucket_name, resource_name,
-        template_file, parameters_file, credentials_file, region_name, **kwargs):
-    CfyCFNIntegration(
-        name, outputs_file, stack_name, template_url, bucket_name, resource_name,
-        template_file, parameters_file, credentials_file, region_name).execute()
+def cfn(**kwargs):
+    CfyCFNIntegration(**kwargs).execute()
 
 
-def kubernetes(
-        name, outputs_file, gcp_credentials_file, token, token_file, master_host, namespace,
-        app_definition_file, ca_cert_file, ssl_cert_file, ssl_key_file, skip_ssl_verification,
-        other_options_file, validate_status, allow_node_redefinition, debug, **kwargs):
-    CfyKubernetesIntegration(
-        name, outputs_file, gcp_credentials_file, token, token_file, master_host,
-        namespace, app_definition_file, ca_cert_file, ssl_cert_file, ssl_key_file,
-        skip_ssl_verification, other_options_file, validate_status,
-        allow_node_redefinition, debug).execute()
+def kubernetes(**kwargs):
+    CfyKubernetesIntegration(**kwargs).execute()
 
 
 def delete_deployment(name, **kwargs):
