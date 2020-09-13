@@ -10,12 +10,15 @@ def configuration = [vaultUrl: "${env.VAULT_URL}",  vaultCredentialId: 'vault-ap
 
 @Library('pipeline-shared-library') _
 pipeline {
+//     agent {
+//         kubernetes {
+//             label 'cli-docker'
+//             defaultContainer 'jnlp'
+//             yamlFile 'jenkins/build-pod.yaml'
+//         }
+//     }
     agent {
-        kubernetes {
-            label 'cli-docker'
-            defaultContainer 'jnlp'
-            yamlFile 'jenkins/build-pod.yaml'
-        }
+        node 'docker'
     }
 
     parameters {
