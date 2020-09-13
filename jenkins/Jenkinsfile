@@ -10,16 +10,16 @@ def configuration = [vaultUrl: "${env.VAULT_URL}",  vaultCredentialId: 'vault-ap
 
 @Library('pipeline-shared-library') _
 pipeline {
-//     agent {
-//         kubernetes {
-//             label 'cli-docker'
-//             defaultContainer 'jnlp'
-//             yamlFile 'jenkins/build-pod.yaml'
-//         }
-//     }
     agent {
-        node 'docker'
+        kubernetes {
+            label 'cli-docker'
+            defaultContainer 'jnlp'
+            yamlFile 'jenkins/build-pod.yaml'
+        }
     }
+//     agent {
+//         node 'docker'
+//     }
 
     parameters {
         string(name: 'VERSION', defaultValue: '5.0.5.1', description: 'Cloudify version label, to be used in the filenames (eg. "5.1.0")')
@@ -52,11 +52,11 @@ pipeline {
 //                 when { branch pattern: ".+-build", comparator: "REGEXP"}
                 withVault([configuration: configuration, vaultSecrets: secrets]) {
                     dir("${env.WORKSPACE}/${env.PROJECT}") {
-                        echo "Building Docker Image"
-                        sh "docker build --tag cloudifyplatform/cloudify-cli:5.0.5.1 ."
-
                         echo "Docker Login"
                         sh "echo $DOCKER_PASSWORD | docker login -u=\"$DOCKER_USERNAME\" --password-stdin"
+
+                        echo "Building Docker Image"
+                        sh "docker build --tag cloudifyplatform/cloudify-cli:5.0.5.1 ."
 
                         echo "Uploading Image to Docker Hub"
                         sh "docker push cloudifyplatform/cloudify-cli:5.0.5.1"
