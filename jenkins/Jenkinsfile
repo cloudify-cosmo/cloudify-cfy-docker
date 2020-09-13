@@ -44,18 +44,19 @@ pipeline {
         STAGE_DIR = "cloudify-cfy-docker"
         PATH= "/root/.local/bin:$PATH"
         CFY_MANAGER_URL = 'https://raw.githubusercontent.com/cloudify-cosmo/cloudify-cfy-docker'
+        DOCKER_HOST = '127.0.0.1'
     }
 
     stages {
         stage ('build image') {
             steps {
-                container('docker') {
+                container('dind-daemon') {
 //                 when { branch pattern: ".+-build", comparator: "REGEXP"}
                     withVault([configuration: configuration, vaultSecrets: secrets]) {
                         dir("${env.WORKSPACE}/${env.PROJECT}") {
                             echo "Docker Login ${env.DOCKER_USERNAME}"
-    //                         sh "echo ${env.DOCKER_PASSWORD} | docker login -u=\"${env.DOCKER_USERNAME}\" --password-stdin"
-                            sh "docker login -u=\"${env.DOCKER_USERNAME}\" -p=\"${env.DOCKER_PASSWORD}\""
+                            sh "echo ${env.DOCKER_PASSWORD} | docker login -u=\"${env.DOCKER_USERNAME}\" --password-stdin"
+
 
                             echo "Building Docker Image"
                             sh "docker build --tag cloudifyplatform/cloudify-cli:5.0.5.1 ."
