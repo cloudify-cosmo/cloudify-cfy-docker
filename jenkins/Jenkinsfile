@@ -36,6 +36,8 @@ pipeline {
             when { branch pattern: ".+-build", comparator: "REGEXP"}
             environment {
                 BRANCH_BUILD_NUMBER = "${env.BRANCH_NAME.split('-')[0]}"
+                DOCKER_USERNAME = "${env.DOCKER_USERNAME}"
+                DOCKER_PASSWORD = "${env.DOCKER_PASSWORD}"
             }
             steps {
                 container('dind-daemon') {
@@ -44,9 +46,9 @@ pipeline {
                             echo "Uploading Image to Docker Hub"
                             sh '''
                             #!/bin/bash
-                            docker login -u="${env.DOCKER_USERNAME}" -p="${env.DOCKER_PASSWORD}"
-                            docker build --tag cloudifyplatform/cloudify-cli:${BRANCH_BUILD_NUMBER} .
-                            docker push cloudifyplatform/cloudify-cli:${BRANCH_BUILD_NUMBER}
+                            docker login -u="$DOCKER_USERNAME" -p="$DOCKER_PASSWORD"
+                            docker build --tag cloudifyplatform/cloudify-cli:$BRANCH_BUILD_NUMBER .
+                            docker push cloudifyplatform/cloudify-cli:$BRANCH_BUILD_NUMBER
                             '''
                         }
                     }
