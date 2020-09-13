@@ -54,9 +54,9 @@ pipeline {
 //                 when { branch pattern: ".+-build", comparator: "REGEXP"}
                     withVault([configuration: configuration, vaultSecrets: secrets]) {
                         dir("${env.WORKSPACE}/${env.PROJECT}") {
-                            echo "Docker Login ${env.DOCKER_USERNAME}"
-                            sh "echo ${env.DOCKER_PASSWORD} | docker login -u=\"${env.DOCKER_USERNAME}\" --password-stdin"
-
+                            echo "Docker Login"
+//                             sh "echo ${env.DOCKER_PASSWORD} | docker login -u=\"${env.DOCKER_USERNAME}\" --password-stdin"
+                            sh "docker login -u=\"${env.DOCKER_USERNAME}\" -p=\"${env.DOCKER_PASSWORD}\""
 
                             echo "Building Docker Image"
                             sh "docker build --tag cloudifyplatform/cloudify-cli:5.0.5.1 ."
