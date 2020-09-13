@@ -1,6 +1,16 @@
 # cloudify-cfy-docker
 
-To create cfy docker image run 
+This repository contains `Dockerfile`s for certain Docker images that facilitate working with
+Cloudify (such as images for CI/CD platforms).
+
+To create an image, navigate to the directory containing the `Dockerfile` of choice and execute:
+ 
+```bash
+docker build --tag <name>:<version> .
 ```
-docker build --tag cfy:5.0.5.1 .
+
+For example:
+
+```bash
+docker build --tag cfyci:latest .
 ```
