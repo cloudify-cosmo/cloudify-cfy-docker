@@ -43,10 +43,10 @@ pipeline {
                         dir("${env.WORKSPACE}/${env.PROJECT}") {
                             echo "Uploading Image to Docker Hub"
                             sh '''
-                                #!/bin/bash
-                                docker login -u=\"${env.DOCKER_USERNAME}\" -p=\"${env.DOCKER_PASSWORD}\"
-                                docker build --tag cloudifyplatform/cloudify-cli:${BRANCH_BUILD_NUMBER} .
-                                docker push cloudifyplatform/cloudify-cli:${BRANCH_BUILD_NUMBER}
+                            #!/bin/bash
+                            docker login -u="${env.DOCKER_USERNAME}" -p="${env.DOCKER_PASSWORD}"
+                            docker build --tag cloudifyplatform/cloudify-cli:${BRANCH_BUILD_NUMBER} .
+                            docker push cloudifyplatform/cloudify-cli:${BRANCH_BUILD_NUMBER}
                             '''
                         }
                     }
