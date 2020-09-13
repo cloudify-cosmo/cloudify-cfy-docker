@@ -6,4 +6,3 @@ RUN apk add --no-cache python2 git openssh-client curl gcc python2-dev musl-dev 
     rm get-pip.py && \
     pip install --no-cache-dir cloudify==5.0.5.1 awscli && \
     rm -rf ~/.cache
-COPY resources/cfyci.py /usr/local/bin/cfyci
