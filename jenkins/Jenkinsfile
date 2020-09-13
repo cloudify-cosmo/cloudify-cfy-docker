@@ -46,6 +46,7 @@ pipeline {
     stages {
         stage ('build image') {
             steps {
+//                 when { branch pattern: ".+-build", comparator: "REGEXP"}
                 withVault([configuration: configuration, vaultSecrets: secrets]) {
                     dir("${env.WORKSPACE}/${env.PROJECT}") {
                         echo "Building Docker Image"

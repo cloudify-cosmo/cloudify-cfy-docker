@@ -1,14 +1,14 @@
 apiVersion: v1
 kind: Pod
-  spec:
-    containers:
-    - name: py36
-      image: docker
-      command:
-      - cat
-      tty: true
-      securityContext:
-        runAsUser: 0
-        privileged: true
-    nodeSelector:
-      instance-type: spot
+spec:
+  containers:
+  - name: py36
+    image: docker
+    command:
+    - cat
+    tty: true
+    securityContext:
+      runAsUser: 0
+      privileged: true
+  nodeSelector:
+    instance-type: spot
