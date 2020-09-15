@@ -65,33 +65,57 @@ def read_json_or_yaml(path):
         return yaml.load(f)
 
 
-def _cfy_cli(cmdline):
+def _use_ssl():
+    """
+    Determines if SSL should be used when communicating with Cloudify Manager.
+    SSL will be used unless the `CLOUDIFY_SSL` environment variable is defined
+    to the value "false" (case-insensitive).
+    """
+    return os.environ.get(CLOUDIFY_SSL_ENV, '').lower() != 'false'
+
+
+def _cfy_cli_inner(cmdline):
+    """
+    Lowest layer of calling the Cloudify CLI.
+    Typically, you would want to call "_cfy_cli" instead of this one.
+    """
     env = dict(os.environ)
     # If "trust all" is in effect, then disable this warning and
     # assume the user knows what they're doing.
-    use_ssl = os.environ.get(CLOUDIFY_SSL_ENV, '').lower() != 'false'
-    if use_ssl and get_ssl_trust_all():
+    if _use_ssl() and get_ssl_trust_all():
         env['PYTHONWARNINGS'] = "ignore:Unverified HTTPS request"
-    if not os.path.isdir(CLOUDIFY_WORKDIR):
-        logger.info("First-time CLI invocation; creating CLI profile")
-        manager_host = os.environ[CLOUDIFY_HOST_ENV]
-        manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
-        manager_tenant = os.environ.get(CLOUDIFY_TENANT_ENV, DEFAULT_TENANT_NAME)
-
-        init_cmdline = [
-            'cfy', 'profile', 'use', manager_host,
-            '-t', manager_tenant
-        ]
-        if use_ssl:
-            init_cmdline.append('--ssl')
-
-        logger.info("Initializing; host=%s, user=%s, tenant=%s", manager_host, manager_user, manager_tenant)
-        subprocess.check_call(init_cmdline, env=env)
-        logger.info("Profile created successfully")
     full_cmdline = ['cfy']
     full_cmdline.extend(cmdline)
     logger.info("Running: %s", full_cmdline)
     subprocess.check_call(full_cmdline, env=env)
+
+
+def _init_profile():
+    manager_host = os.environ[CLOUDIFY_HOST_ENV]
+    manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
+    manager_tenant = os.environ.get(CLOUDIFY_TENANT_ENV, DEFAULT_TENANT_NAME)
+
+    init_cmdline = [
+        'profile', 'use', manager_host,
+        '-t', manager_tenant
+    ]
+    if _use_ssl():
+        init_cmdline.append('--ssl')
+
+    logger.info("Initializing; host=%s, user=%s, tenant=%s", manager_host, manager_user, manager_tenant)
+    _cfy_cli_inner(init_cmdline)
+    logger.info("Profile created successfully")
+
+
+def _cfy_cli(cmdline):
+    """
+    Use this in order to call the CLI. It checks first to see if a profile needs
+    to be created, and creates one if so.
+    """
+    if not os.path.isdir(CLOUDIFY_WORKDIR):
+        logger.info("First-time CLI invocation; creating CLI profile")
+        _init_profile()
+    _cfy_cli_inner(cmdline)
 
 
 def with_client(func):
@@ -106,7 +130,7 @@ def with_client(func):
         manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
         manager_password = os.environ[CLOUDIFY_PASSWORD_ENV]
         manager_tenant = os.environ.get(CLOUDIFY_TENANT_ENV, DEFAULT_TENANT_NAME)
-        use_ssl = os.environ.get(CLOUDIFY_SSL_ENV, '').lower() != 'false'
+        use_ssl = _use_ssl()
         ssl_trust_all = get_ssl_trust_all()
         # If user wants to trust all certificates, then disable the warning
         # about it and assume (and hope) they know what they're doing.
@@ -247,6 +271,10 @@ def write_environment_outputs(name, outputs_file):
         logger.info("Writing environment data to %s", outputs_file)
         with open(outputs_file, 'w') as f:
             json.dump(env_data, f, indent=4)
+
+
+def init(**kwargs):
+    _init_profile()
 
 
 def create_deployment(name, blueprint, inputs_file, **kwargs):
@@ -590,31 +618,34 @@ def main():
     subparsers = parser.add_subparsers()
 
     # Currently empty (may add something to it soon...)
-    common_init_parent = argparse.ArgumentParser(add_help=False)
+    common_parent = argparse.ArgumentParser(add_help=False)
 
-    create_deployment_parser = subparsers.add_parser('create-deployment', parents=[common_init_parent])
+    init_parser = subparsers.add_parser('init', parents=[common_parent])
+    init_parser.set_defaults(func=init)
+
+    create_deployment_parser = subparsers.add_parser('create-deployment', parents=[common_parent])
     create_deployment_parser.add_argument('--name', required=True)
     create_deployment_parser.add_argument('--blueprint', required=True)
     create_deployment_parser.add_argument('--inputs', dest='inputs_file', type=optional_string)
     create_deployment_parser.set_defaults(func=create_deployment)
 
-    create_environment_parser = subparsers.add_parser('create-environment', parents=[common_init_parent])
+    create_environment_parser = subparsers.add_parser('create-environment', parents=[common_parent])
     create_environment_parser.add_argument('--name', required=True)
     create_environment_parser.add_argument('--blueprint', required=True)
     create_environment_parser.add_argument('--inputs', dest='inputs_file', type=optional_string)
     create_environment_parser.add_argument('--outputs-file', dest='outputs_file', type=optional_string)
     create_environment_parser.set_defaults(func=create_environment)
 
-    delete_deployment_parser = subparsers.add_parser('delete-deployment', parents=[common_init_parent])
+    delete_deployment_parser = subparsers.add_parser('delete-deployment', parents=[common_parent])
     delete_deployment_parser.add_argument('--name', required=True)
     delete_deployment_parser.set_defaults(func=delete_deployment)
 
-    delete_environment_parser = subparsers.add_parser('delete-environment', parents=[common_init_parent])
+    delete_environment_parser = subparsers.add_parser('delete-environment', parents=[common_parent])
     delete_environment_parser.add_argument('--name', required=True)
     delete_environment_parser.add_argument('--ignore-failure', type=boolean_string)
     delete_environment_parser.set_defaults(func=delete_environment)
 
-    integrations_parent = argparse.ArgumentParser(add_help=False, parents=[common_init_parent])
+    integrations_parent = argparse.ArgumentParser(add_help=False, parents=[common_parent])
     integrations_parent.add_argument('--name')
     integrations_parent.add_argument('--invocation-params-file', type=optional_string)
     integrations_parent.add_argument('--outputs-file', type=optional_string)
