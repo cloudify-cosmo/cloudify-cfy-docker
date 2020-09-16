@@ -1,10 +1,10 @@
 def secrets = [
     [path: 'secret/jenkins/dockerhub', engineVersion: 2, secretValues: [
-        [envVar: 'DOCKER_USERNAME', vaultKey: 'cosmo_user'],
-        [envVar: 'DOCKER_PASSWORD', vaultKey: 'cosmo_password']
-    ]
+            [envVar: 'DOCKER_USERNAME', vaultKey: 'cosmo_user'],
+            [envVar: 'DOCKER_PASSWORD', vaultKey: 'cosmo_password']
+        ]
+    ],
 ]
-
 
 def configuration = [vaultUrl: "${env.VAULT_URL}",  vaultCredentialId: 'vault-app-role', engineVersion: 2]
 
