@@ -161,8 +161,8 @@ def wait_for_and_validate_execution(client, execution):
         client, execution, get_events_logger(False), True, timeout=None, logger=logger)
     if execution.status != Execution.TERMINATED:
         raise Exception(
-            "Unexpected status of execution %s: %s (expected: %s)" %
-            (execution.id, execution.status, Execution.TERMINATED))
+            "Unexpected status of execution {}: {} (expected: {})".format(
+                execution.id, execution.status, Execution.TERMINATED))
     return execution
 
 
@@ -183,8 +183,9 @@ def _create_deployment(name, blueprint_name, inputs, client):
         elif type(inputs) == str:
             inputs_file_name = inputs
         else:
-            raise Exception("Unhandled inputs type: %s; should be either a dictionary (containing inputs) "
-                            "or a string (containing a path to a file)" % type(inputs))
+            raise Exception(
+                "Unhandled inputs type: {}; should be either a dictionary (containing inputs) "
+                "or a string (containing a path to a file)".format(type(inputs)))
         cmdline.extend(['-i', inputs_file_name])
     try:
         _cfy_cli(cmdline)
@@ -197,8 +198,9 @@ def _create_deployment(name, blueprint_name, inputs, client):
     # we need to look it up (see https://cloudifysource.atlassian.net/browse/CY-2385).
     executions = client.executions.list(deployment_id=name)
     if len(executions) != 1:
-        raise Exception("Unexpected number of executions for deployment "
-                        "'%s': %d (should be 1)" % (name, len(executions)))
+        raise Exception(
+            "Unexpected number of executions for deployment "
+            "'{}': {} (should be 1)".format(name, len(executions)))
     wait_for_and_validate_execution(client, executions[0])
 
 
@@ -245,7 +247,8 @@ def _delete_deployment(name, client):
             raise
 
     if not ended:
-        raise Exception("Deployment did not end within %d seconds" % DEPLOYMENT_DELETE_TIMEOUT)
+        raise Exception("Deployment did not end within {} seconds".format(
+            DEPLOYMENT_DELETE_TIMEOUT))
 
 
 @with_client
@@ -266,7 +269,7 @@ def write_environment_outputs(name, outputs_file):
     if IS_GITHUB:
         # Set the environment's data as an output.
         logger.info("Setting environment data output variable: %s", env_data)
-        print("::set-output name=environment-data::%s" % json.dumps(env_data))
+        print("::set-output name=environment-data::%s".format(json.dumps(env_data)))
     if outputs_file:
         logger.info("Writing environment data to %s", outputs_file)
         with open(outputs_file, 'w') as f:
@@ -282,11 +285,15 @@ def create_deployment(name, blueprint, inputs_file, **kwargs):
 
 
 def create_environment(name, blueprint, inputs_file, outputs_file, **kwargs):
-    logger.info("Creating environment; name=%s, blueprint=%s, inputs=%s, outputs=%s",
-                name, blueprint, inputs_file, outputs_file)
-    blueprint_name = 'cfyci-%s-bp' % name
+    logger.info(
+        "Creating environment; name=%s, blueprint=%s, inputs=%s, outputs=%s",
+        name, blueprint, inputs_file, outputs_file)
+    blueprint_name = 'cfyci-{}-bp'.format(name)
+    logger.info("Uploading blueprint: %s", blueprint_name)
     upload_blueprint(blueprint_name, blueprint)
+    logger.info("Creating deployment: %s", name)
     _create_deployment(name, blueprint_name, inputs_file)
+    logger.info("Running the install workflow")
     install(name)
     write_environment_outputs(name, outputs_file)
 
@@ -325,10 +332,26 @@ class CfyIntegration(object):
             mapping[source] = target
         return mapping
 
-    def execute(self):
+    @with_client
+    def execute(self, client):
+        # Ensure blueprint exists.
+        blueprint_name = self.blueprint_name()
+        logger.info("Validating existence of integration blueprint: %s", blueprint_name)
+        try:
+            client.blueprints.get(blueprint_name)
+        except CloudifyClientError as ex:
+            if ex.status_code == httplib.NOT_FOUND:
+                raise Exception(
+                    "Required integration blueprint, {}, could not be located "
+                    "on Cloudify Manager".format(blueprint_name))
+            raise
+        # If we got here, then the integration blueprint exists.
+        logger.info("Integration blueprint found; creating deployment")
         inputs = self.prepare_inputs()
-        _create_deployment(self._deployment_id, self.blueprint_name(), inputs)
+        _create_deployment(self._deployment_id, blueprint_name, inputs)
+        logger.info("Deployment created successfully; installing it")
         install(self._deployment_id)
+        logger.info("Installation ended successfully")
         write_environment_outputs(self._deployment_id, self._outputs_file)
 
 
@@ -461,11 +484,13 @@ class CfyCFNIntegration(CfyIntegration):
                 resource_config_kwargs['TemplateBody'] = f.read()
         elif self._bucket_name and self._resource_name:
             # TODO: Add this to the plugin?
-            template_url = "https://%s.s3.amazonaws.com/%s" % (self._bucket_name, self._resource_name)
+            template_url = "https://{}.s3.amazonaws.com/{}".format(self._bucket_name, self._resource_name)
             logger.info("Concluded URL for stack file: %s", template_url)
             resource_config_kwargs['TemplateURL'] = template_url
         else:
-            raise Exception("Either template URL, template body, or combination of bucket name and resource name, must be provided")
+            raise Exception(
+                "Either template URL, template body, or combination of bucket name "
+                "and resource name, must be provided")
         return inputs
 
 
@@ -581,10 +606,23 @@ def delete_deployment(name, **kwargs):
     _delete_deployment(name)
 
 
-def delete_environment(name, ignore_failure, **kwargs):
-    logger.info("Deleting environment; name=%s, ignore_failure=%s", name, ignore_failure)
+@with_client
+def delete_environment(name, delete_blueprint, ignore_failure, client, **kwargs):
+    logger.info(
+        "Deleting environment; name=%s, delete_blueprint=%s, ignore_failure=%s",
+        name, delete_blueprint, ignore_failure)
+    logger.info("Running the uninstall workflow")
     uninstall(name, ignore_failure)
+    logger.info("Deleting deployment")
     _delete_deployment(name)
+    if delete_blueprint:
+        logger.info("Checking if any deployments exist for blueprint '%s'", name)
+        deployments = client.deployments.list(blueprint_id=name)
+        if deployments:
+            logger.info("Found at least one more deployment; not deleting blueprint")
+        else:
+            logger.info("Deleting blueprint: %s", name)
+            _cfy_cli(['blueprints', 'delete', name])
 
 
 def main():
@@ -607,7 +645,16 @@ def main():
             return True
         if lower_value == 'false':
             return False
-        raise Exception("Unrecognized boolean value: '%s'" % s)
+        raise Exception("Unrecognized boolean value: '{}'".format(s))
+
+    def optional_existing_path(s):
+        filtered = optional_string(s)
+        if filtered is None:
+            return None
+        # Must be path to existing file.
+        if not os.path.isfile(filtered):
+            raise argparse.ArgumentTypeError("Path not found: {}".format(filtered))
+        return filtered
 
     # On first glance, you may think that we should use mutually exclusive arguments
     # groups. Yeah, I know. However, note that we have to allow all argument combinations,
@@ -626,13 +673,13 @@ def main():
     create_deployment_parser = subparsers.add_parser('create-deployment', parents=[common_parent])
     create_deployment_parser.add_argument('--name', required=True)
     create_deployment_parser.add_argument('--blueprint', required=True)
-    create_deployment_parser.add_argument('--inputs', dest='inputs_file', type=optional_string)
+    create_deployment_parser.add_argument('--inputs', dest='inputs_file', type=optional_existing_path)
     create_deployment_parser.set_defaults(func=create_deployment)
 
     create_environment_parser = subparsers.add_parser('create-environment', parents=[common_parent])
     create_environment_parser.add_argument('--name', required=True)
     create_environment_parser.add_argument('--blueprint', required=True)
-    create_environment_parser.add_argument('--inputs', dest='inputs_file', type=optional_string)
+    create_environment_parser.add_argument('--inputs', dest='inputs_file', type=optional_existing_path)
     create_environment_parser.add_argument('--outputs-file', dest='outputs_file', type=optional_string)
     create_environment_parser.set_defaults(func=create_environment)
 
@@ -642,26 +689,27 @@ def main():
 
     delete_environment_parser = subparsers.add_parser('delete-environment', parents=[common_parent])
     delete_environment_parser.add_argument('--name', required=True)
+    delete_environment_parser.add_argument('--delete-blueprint', type=boolean_string)
     delete_environment_parser.add_argument('--ignore-failure', type=boolean_string)
     delete_environment_parser.set_defaults(func=delete_environment)
 
     integrations_parent = argparse.ArgumentParser(add_help=False, parents=[common_parent])
-    integrations_parent.add_argument('--name')
-    integrations_parent.add_argument('--invocation-params-file', type=optional_string)
+    integrations_parent.add_argument('--name', required=True)
+    integrations_parent.add_argument('--invocation-params-file', type=optional_existing_path)
     integrations_parent.add_argument('--outputs-file', type=optional_string)
 
     terraform_parser = subparsers.add_parser('terraform', parents=[integrations_parent])
-    terraform_parser.add_argument('--module')
-    terraform_parser.add_argument('--variables', type=optional_string)
-    terraform_parser.add_argument('--environment', type=optional_string)
+    terraform_parser.add_argument('--module', required=True)
+    terraform_parser.add_argument('--variables', type=optional_existing_path)
+    terraform_parser.add_argument('--environment', type=optional_existing_path)
     terraform_parser.add_argument('--environment-mapping', nargs="*", default=[])
     terraform_parser.set_defaults(func=terraform)
 
     arm_parser = subparsers.add_parser('arm', parents=[integrations_parent])
     arm_parser.add_argument('--resource-group', required=True)
     arm_parser.add_argument('--template-file', required=True)
-    arm_parser.add_argument('--parameters-file', type=optional_string)
-    arm_parser.add_argument('--credentials-file', type=optional_string)
+    arm_parser.add_argument('--parameters-file', type=optional_existing_path)
+    arm_parser.add_argument('--credentials-file', type=optional_existing_path)
     arm_parser.add_argument('--location', type=optional_string)
     arm_parser.set_defaults(func=arm)
 
@@ -670,24 +718,24 @@ def main():
     cfn_parser.add_argument('--template-url', type=optional_string)
     cfn_parser.add_argument('--bucket-name', type=optional_string)
     cfn_parser.add_argument('--resource-name', type=optional_string)
-    cfn_parser.add_argument('--template-file', type=optional_string)
-    cfn_parser.add_argument('--parameters-file', type=optional_string)
-    cfn_parser.add_argument('--credentials-file', type=optional_string)
+    cfn_parser.add_argument('--template-file', type=optional_existing_path)
+    cfn_parser.add_argument('--parameters-file', type=optional_existing_path)
+    cfn_parser.add_argument('--credentials-file', type=optional_existing_path)
     cfn_parser.add_argument('--region-name', type=optional_string)
     cfn_parser.set_defaults(func=cfn)
 
     k8s_parser = subparsers.add_parser('k8s', parents=[integrations_parent])
-    k8s_parser.add_argument('--gcp-credentials-file', type=optional_string)
+    k8s_parser.add_argument('--gcp-credentials-file', type=optional_existing_path)
     k8s_parser.add_argument('--token', type=optional_string)
-    k8s_parser.add_argument('--token-file', type=optional_string)
+    k8s_parser.add_argument('--token-file', type=optional_existing_path)
     k8s_parser.add_argument('--master-host', required=True)
     k8s_parser.add_argument('--namespace', type=optional_string)
     k8s_parser.add_argument('--app-definition-file', required=True)
-    k8s_parser.add_argument('--ca-cert-file', type=optional_string)
-    k8s_parser.add_argument('--ssl-cert-file', type=optional_string)
-    k8s_parser.add_argument('--ssl-key-file', type=optional_string)
+    k8s_parser.add_argument('--ca-cert-file', type=optional_existing_path)
+    k8s_parser.add_argument('--ssl-cert-file', type=optional_existing_path)
+    k8s_parser.add_argument('--ssl-key-file', type=optional_existing_path)
     k8s_parser.add_argument('--skip-ssl-verification', type=boolean_string)
-    k8s_parser.add_argument('--other-options-file', type=optional_string)
+    k8s_parser.add_argument('--other-options-file', type=optional_existing_path)
     k8s_parser.add_argument('--validate-status', type=boolean_string)
     k8s_parser.add_argument('--allow-node-redefinition', type=boolean_string)
     k8s_parser.add_argument('--debug', type=boolean_string)
