@@ -1,10 +1,10 @@
 def secrets = [
-    [path: 'secret/jenkins/dockerhub', engineVersion: 2, secretValues: [
-            [envVar: 'DOCKER_USERNAME', vaultKey: 'username'],
-            [envVar: 'DOCKER_PASSWORD', vaultKey: 'password']
+    def secrets = [
+        [path: 'secret/jenkins/dockerhub', engineVersion: 2, secretValues: [
+            [envVar: 'DOCKER_USERNAME', vaultKey: 'cosmo_user'],
+            [envVar: 'DOCKER_PASSWORD', vaultKey: 'cosmo_password']
         ]
     ],
-]
 
 def configuration = [vaultUrl: "${env.VAULT_URL}",  vaultCredentialId: 'vault-app-role', engineVersion: 2]
 
@@ -46,6 +46,7 @@ pipeline {
                             echo "Uploading Image to Docker Hub"
                             sh '''
                             #!/bin/bash
+                            docker login -u="$DOCKER_USERNAME" -p="$DOCKER_PASSWORD"
                             docker build --tag cloudifyplatform/cloudify-cli:$BRANCH_BUILD_NUMBER .
                             docker login -u="$DOCKER_USERNAME" -p="$DOCKER_PASSWORD"
                             docker push cloudifyplatform/cloudify-cli:$BRANCH_BUILD_NUMBER
