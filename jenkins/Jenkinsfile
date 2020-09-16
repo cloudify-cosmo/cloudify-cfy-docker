@@ -43,14 +43,12 @@ pipeline {
                 container('dind-daemon') {
                     withVault([configuration: configuration, vaultSecrets: secrets]) {
                         dir("${env.WORKSPACE}/${env.PROJECT}") {
-                            echo "Uploading Image to Docker Hub"
-                            sh '''
-                            #!/bin/bash
-                            docker login -u="$DOCKER_USERNAME" -p="$DOCKER_PASSWORD"
-                            docker build --tag cloudifyplatform/cloudify-cli:$BRANCH_BUILD_NUMBER .
-                            docker login -u="$DOCKER_USERNAME" -p="$DOCKER_PASSWORD"
-                            docker push cloudifyplatform/cloudify-cli:$BRANCH_BUILD_NUMBER
-                            '''
+                            echo "Docker hub login"
+                            sh 'docker login -u="$DOCKER_USERNAME" -p="$DOCKER_PASSWORD"'
+                            echo "Docker build image"
+                            sh 'docker build --tag cloudifyplatform/cloudify-cli:$BRANCH_BUILD_NUMBER .'
+                            echo "Docker push image"
+                            sh 'docker push cloudifyplatform/cloudify-cli:$BRANCH_BUILD_NUMBER'
                         }
                     }
                 }
