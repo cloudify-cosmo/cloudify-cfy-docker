@@ -247,20 +247,21 @@ def _delete_deployment(name, client):
 
 
 @with_client
-def get_environment_data(name, client):
+def get_environment_data(name, blueprint_id, client):
     outputs = client.deployments.outputs.get(name)
     capabilities = client.deployments.capabilities.get(name)
     return {
+        "blueprint_id": blueprint_id,
         "deployment_id": name,
         "outputs": outputs['outputs'],
         "capabilities": capabilities['capabilities']
     }
 
 
-def write_environment_outputs(name, outputs_file):
+def write_environment_outputs(name, blueprint_id, outputs_file):
     if not (outputs_file or IS_GITHUB):
         return
-    env_data = get_environment_data(name)
+    env_data = get_environment_data(name, blueprint_id)
     if IS_GITHUB:
         # Set the environment's data as an output.
         logger.info("Setting environment data output variable: %s", env_data)
@@ -290,7 +291,7 @@ def create_environment(name, blueprint, inputs_file, outputs_file, **kwargs):
     _create_deployment(name, blueprint_name, inputs_file)
     logger.info("Running the install workflow")
     install(name)
-    write_environment_outputs(name, outputs_file)
+    write_environment_outputs(name, blueprint_name, outputs_file)
 
 
 class CfyIntegration(object):
@@ -353,7 +354,7 @@ class CfyIntegration(object):
         logger.info("Deployment created successfully; installing it")
         install(self._deployment_id)
         logger.info("Installation ended successfully")
-        write_environment_outputs(self._deployment_id, self._outputs_file)
+        write_environment_outputs(self._deployment_id, blueprint_name, self._outputs_file)
 
 
 class CfyTerraformIntegration(CfyIntegration):
