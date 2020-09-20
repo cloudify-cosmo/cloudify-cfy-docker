@@ -53,11 +53,6 @@ DEPLOYMENT_DELETE_TIMEOUT_DEFAULT = 120
 DEPLOYMENT_DELETE_TIMEOUT = int(os.environ.get(
     'DEPLOYMENT_DELETE_TIMEOUT', str(DEPLOYMENT_DELETE_TIMEOUT_DEFAULT)))
 
-TERRAFORM_INTEGRATION_BLUEPRINT = 'cfy-terraform-1.0'
-AZURE_ARM_INTEGRATION_BLUEPRINT = 'cfy-azure-arm-1.0'
-CLOUDFORMATION_INTEGRATION_BLUEPRINT = 'cfy-cloudformation-1.0'
-KUBERNETES_INTEGRATION_BLUEPRINT = 'cfy-kubernetes-1.0'
-
 
 def read_json_or_yaml(path):
     # We assume here, of course, that any JSON file is also a YAML file.
@@ -302,11 +297,12 @@ class CfyIntegration(object):
     """
     Root class for all integrations.
     """
-    def __init__(self, deployment_id, outputs_file):
+    def __init__(self, deployment_id, outputs_file, configuration):
         self._deployment_id = deployment_id
         self._outputs_file = outputs_file
+        self._configuration = configuration
 
-    def blueprint_name(self):
+    def integration_name(self):
         raise NotImplementedError()
 
     def prepare_inputs(self):
@@ -334,19 +330,24 @@ class CfyIntegration(object):
 
     @with_client
     def execute(self, client):
-        # Ensure blueprint exists.
-        blueprint_name = self.blueprint_name()
-        logger.info("Validating existence of integration blueprint: %s", blueprint_name)
+        integration_name = self.integration_name()
+        integration_desc = self._configuration['integrations'][integration_name]
+        blueprint_name = integration_desc['blueprint_id']
+        logger.info("Checking existence of integration blueprint: %s", blueprint_name)
         try:
             client.blueprints.get(blueprint_name)
         except CloudifyClientError as ex:
             if ex.status_code == httplib.NOT_FOUND:
-                raise Exception(
-                    "Required integration blueprint, {}, could not be located "
-                    "on Cloudify Manager".format(blueprint_name))
-            raise
+                _cfy_cli([
+                    'blueprints', 'upload',
+                    self._configuration['integration_blueprints_archive_url'],
+                    '-b', blueprint_name,
+                    '-n', integration_desc['blueprint_file']
+                ])
+            else:
+                raise
         # If we got here, then the integration blueprint exists.
-        logger.info("Integration blueprint found; creating deployment")
+        logger.info("Creating deployment")
         inputs = self.prepare_inputs()
         _create_deployment(self._deployment_id, blueprint_name, inputs)
         logger.info("Deployment created successfully; installing it")
@@ -356,16 +357,16 @@ class CfyIntegration(object):
 
 
 class CfyTerraformIntegration(CfyIntegration):
-    def __init__(self, name, outputs_file, module, variables, environment, environment_mapping, **kwargs):
-        CfyIntegration.__init__(self, name, outputs_file)
+    def __init__(self, configuration, name, outputs_file, module, variables, environment, environment_mapping, **kwargs):
+        CfyIntegration.__init__(self, name, outputs_file, configuration)
         self._module = module
         self._variables = variables
         self._environment = environment
         self._environment_mapping = CfyIntegration.parse_environment_mapping(
             environment_mapping)
 
-    def blueprint_name(self):
-        return TERRAFORM_INTEGRATION_BLUEPRINT
+    def integration_name(self):
+        return 'terraform'
 
     def prepare_inputs(self):
         inputs = {
@@ -393,17 +394,17 @@ class CfyTerraformIntegration(CfyIntegration):
 
 
 class CfyARMIntegration(CfyIntegration):
-    def __init__(self, name, outputs_file, resource_group, template_file, parameters_file, credentials_file, location,
-                 **kwargs):
-        CfyIntegration.__init__(self, name, outputs_file)
+    def __init__(self, configuration, name, outputs_file, resource_group, template_file, parameters_file,
+                 credentials_file, location, **kwargs):
+        CfyIntegration.__init__(self, name, outputs_file, configuration)
         self._resource_group = resource_group
         self._template_file = template_file
         self._parameters_file = parameters_file
         self._credentials_file = credentials_file
         self._location = location
 
-    def blueprint_name(self):
-        return AZURE_ARM_INTEGRATION_BLUEPRINT
+    def integration_name(self):
+        return 'arm'
 
     def prepare_inputs(self):
         if self._credentials_file:
@@ -430,10 +431,10 @@ class CfyARMIntegration(CfyIntegration):
 
 
 class CfyCFNIntegration(CfyIntegration):
-    def __init__(self, name, outputs_file, stack_name, template_url, bucket_name,
+    def __init__(self, configuration, name, outputs_file, stack_name, template_url, bucket_name,
                  resource_name, template_file, parameters_file, credentials_file,
                  region_name, **kwargs):
-        CfyIntegration.__init__(self, name, outputs_file)
+        CfyIntegration.__init__(self, name, outputs_file, configuration)
         self._stack_name = stack_name
         self._template_url = template_url
         self._bucket_name = bucket_name
@@ -443,8 +444,8 @@ class CfyCFNIntegration(CfyIntegration):
         self._credentials_file = credentials_file
         self._region_name = region_name
 
-    def blueprint_name(self):
-        return CLOUDFORMATION_INTEGRATION_BLUEPRINT
+    def integration_name(self):
+        return 'cfn'
 
     def prepare_inputs(self):
         if self._credentials_file:
@@ -496,12 +497,12 @@ class CfyCFNIntegration(CfyIntegration):
 
 class CfyKubernetesIntegration(CfyIntegration):
     def __init__(
-            self, name, outputs_file, gcp_credentials_file, token, token_file, master_host,
+            self, configuration, name, outputs_file, gcp_credentials_file, token, token_file, master_host,
             namespace, app_definition_file, ca_cert_file, ssl_cert_file, ssl_key_file,
             skip_ssl_verification, other_options_file, validate_status, allow_node_redefinition, debug,
             **kwargs
     ):
-        CfyIntegration.__init__(self, name, outputs_file)
+        CfyIntegration.__init__(self, name, outputs_file,configuration)
         self._gcp_credentials_file = gcp_credentials_file
         self._token = token
         self._token_file = token_file
@@ -517,8 +518,8 @@ class CfyKubernetesIntegration(CfyIntegration):
         self._allow_node_redefinition = allow_node_redefinition
         self._debug = debug
 
-    def blueprint_name(self):
-        return KUBERNETES_INTEGRATION_BLUEPRINT
+    def integration_name(self):
+        return 'kubernetes'
 
     def prepare_inputs(self):
         if sum(1 for x in [
@@ -753,7 +754,8 @@ def main():
             if value and isinstance(value, str):
                 vars_map[key] = Template(value).substitute(os.environ)
 
-    args.func(**vars_map)
+    configuration = read_json_or_yaml('/etc/cfyci/config.yaml')
+    args.func(configuration=configuration, **vars_map)
 
 
 if __name__ == '__main__':
