@@ -1,0 +1,59 @@
+def secrets = [
+    [path: 'secret/jenkins/dockerhub', engineVersion: 2, secretValues: [
+            [envVar: 'DOCKER_USERNAME', vaultKey: 'cosmo_user'],
+            [envVar: 'DOCKER_PASSWORD', vaultKey: 'cosmo_password']
+        ]
+    ],
+]
+
+def configuration = [vaultUrl: "${env.VAULT_URL}",  vaultCredentialId: 'vault-app-role', engineVersion: 2]
+
+@Library('pipeline-shared-library') _
+pipeline {
+    agent {
+        kubernetes {
+            label 'cli-docker'
+            defaultContainer 'jnlp'
+            yamlFile 'jenkins/build-pod.yaml'
+        }
+    }
+
+    options {
+        checkoutToSubdirectory('cloudify-cfy-docker')
+        buildDiscarder(logRotator(numToKeepStr:'30'))
+        timeout(time: 60, unit: 'MINUTES')
+        timestamps()
+    }
+
+    environment {
+        WORKSPACE = "${env.WORKSPACE}"
+        PROJECT = "cloudify-cfy-docker"
+        DOCKER_HOST = '127.0.0.1'
+    }
+
+    stages {
+        stage ('build & upload docker image') {
+            when { branch pattern: ".+-build", comparator: "REGEXP"}
+            environment {
+                BRANCH_BUILD_NUMBER = "${env.BRANCH_NAME.split('-')[0]}"
+                DOCKER_USERNAME = "${env.DOCKER_USERNAME}"
+                DOCKER_PASSWORD = "${env.DOCKER_PASSWORD}"
+            }
+            steps {
+                container('dind-daemon') {
+                    withVault([configuration: configuration, vaultSecrets: secrets]) {
+                        dir("${env.WORKSPACE}/${env.PROJECT}") {
+                            echo "Docker hub login"
+                            sh 'docker login -u="$DOCKER_USERNAME" -p="$DOCKER_PASSWORD"'
+                            echo "Docker build image"
+                            sh 'docker build --tag cloudifyplatform/cloudify-cli:$BRANCH_BUILD_NUMBER .'
+                            echo "Docker push image"
+                            sh 'docker push cloudifyplatform/cloudify-cli:$BRANCH_BUILD_NUMBER'
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
