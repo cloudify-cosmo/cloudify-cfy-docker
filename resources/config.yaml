@@ -1,0 +1,14 @@
+integration_blueprints_archive_url: https://github.com/cloudify-community/ci-cd-integration/archive/1.0.zip
+integrations:
+  arm:
+    blueprint_id: cfy-arm-1.0
+    blueprint_file: arm/blueprint.yaml
+  cfn:
+    blueprint_id: cfy-cfn-1.0
+    blueprint_file: cfn/blueprint.yaml
+  kubernetes:
+    blueprint_id: cfy-kubernetes-1.0
+    blueprint_file: k8s/blueprint.yaml
+  terraform:
+    blueprint_id: cfy-terraform-1.0
+    blueprint_file: terraform/blueprint.yaml
