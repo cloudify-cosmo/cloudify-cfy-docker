@@ -1,7 +1,7 @@
 def secrets = [
     [path: 'secret/jenkins/dockerhub', engineVersion: 2, secretValues: [
-            [envVar: 'DOCKER_USERNAME', vaultKey: 'username'],
-            [envVar: 'DOCKER_PASSWORD', vaultKey: 'password']
+            [envVar: 'DOCKER_USERNAME', vaultKey: 'cosmo_user'],
+            [envVar: 'DOCKER_PASSWORD', vaultKey: 'cosmo_password']
         ]
     ],
 ]
@@ -32,23 +32,23 @@ pipeline {
     }
 
     stages {
-        stage ('build image') {
+        stage ('build & upload docker image') {
             when { branch pattern: ".+-build", comparator: "REGEXP"}
             environment {
                 BRANCH_BUILD_NUMBER = "${env.BRANCH_NAME.split('-')[0]}"
+                DOCKER_USERNAME = "${env.DOCKER_USERNAME}"
+                DOCKER_PASSWORD = "${env.DOCKER_PASSWORD}"
             }
             steps {
                 container('dind-daemon') {
                     withVault([configuration: configuration, vaultSecrets: secrets]) {
                         dir("${env.WORKSPACE}/${env.PROJECT}") {
-                            echo "Docker Login"
-                            sh "docker login -u=\"${env.DOCKER_USERNAME}\" -p=\"${env.DOCKER_PASSWORD}\""
-
-                            echo "Building Docker Image"
-                            sh "docker build --tag cloudifyplatform/cloudify-cli:${BRANCH_BUILD_NUMBER} ."
-
-                            echo "Uploading Image to Docker Hub"
-                            sh "docker push cloudifyplatform/cloudify-cli:${BRANCH_BUILD_NUMBER}"
+                            echo "Docker hub login"
+                            sh 'docker login -u="$DOCKER_USERNAME" -p="$DOCKER_PASSWORD"'
+                            echo "Docker build image"
+                            sh 'docker build --tag cloudifyplatform/cloudify-cli:$BRANCH_BUILD_NUMBER .'
+                            echo "Docker push image"
+                            sh 'docker push cloudifyplatform/cloudify-cli:$BRANCH_BUILD_NUMBER'
                         }
                     }
                 }
