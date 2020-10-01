@@ -30,7 +30,7 @@ from cloudify_cli.constants import (
     DEFAULT_TENANT_NAME
 )
 from cloudify_cli.logger import get_events_logger
-from cloudify_cli.env import CLOUDIFY_WORKDIR, get_ssl_trust_all
+from cloudify_cli.env import get_ssl_trust_all
 from cloudify_cli.execution_events_fetcher import wait_for_execution
 from cloudify_rest_client.client import CloudifyClient, DEFAULT_PROTOCOL, SECURED_PROTOCOL
 from cloudify_rest_client.executions import Execution
@@ -75,6 +75,17 @@ def _cfy_cli_inner(cmdline):
     Typically, you would want to call "_cfy_cli" instead of this one.
     """
     env = dict(os.environ)
+    # Remove all environment variables that are used as fallbacks in the
+    # CLI, as some of them (e.g. tenant) cause conflicts.
+    #for key in [
+    #    CLOUDIFY_USERNAME_ENV,
+    #    CLOUDIFY_PASSWORD_ENV,
+    #    CLOUDIFY_TENANT_ENV
+    #]:
+    #    env.pop(key, None)
+    # Ensure 'CLOUDIFY_TENANT' is defined, as the CLI doesn't automatically
+    # assume 'default_tenant' if the environment variable is not defined.
+    env.setdefault(CLOUDIFY_TENANT_ENV, DEFAULT_TENANT_NAME)
     # If "trust all" is in effect, then disable this warning and
     # assume the user knows what they're doing.
     if _use_ssl() and get_ssl_trust_all():
@@ -85,31 +96,41 @@ def _cfy_cli_inner(cmdline):
     subprocess.check_call(full_cmdline, env=env)
 
 
+def _validate_environment_variables():
+    # Validate environment variables are defined.
+    for var_name in [
+        CLOUDIFY_HOST_ENV,
+        CLOUDIFY_USERNAME_ENV,
+        CLOUDIFY_PASSWORD_ENV
+    ]:
+        if var_name not in os.environ:
+            raise Exception("Required environment variable not defined: {}".format(var_name))
+
+
 def _init_profile():
+    _validate_environment_variables()
     manager_host = os.environ[CLOUDIFY_HOST_ENV]
     manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
-    manager_tenant = os.environ.get(CLOUDIFY_TENANT_ENV, DEFAULT_TENANT_NAME)
 
     init_cmdline = [
-        'profile', 'use', manager_host,
-        '-t', manager_tenant
+        'profile', 'use', manager_host
     ]
-    if _use_ssl():
+    use_ssl = _use_ssl()
+    if use_ssl:
         init_cmdline.append('--ssl')
 
-    logger.info("Initializing; host=%s, user=%s, tenant=%s", manager_host, manager_user, manager_tenant)
+    logger.info(
+        "Initializing; host=%s, user=%s, use_ssl=%s",
+        manager_host, manager_user, use_ssl)
     _cfy_cli_inner(init_cmdline)
     logger.info("Profile created successfully")
 
 
 def _cfy_cli(cmdline):
     """
-    Use this in order to call the CLI. It checks first to see if a profile needs
-    to be created, and creates one if so.
+    Use this in order to call the CLI.
     """
-    if not os.path.isdir(CLOUDIFY_WORKDIR):
-        logger.info("First-time CLI invocation; creating CLI profile")
-        _init_profile()
+    _init_profile()
     _cfy_cli_inner(cmdline)
 
 
@@ -121,6 +142,7 @@ def with_client(func):
     invocation *after* "initialize()" was called.
     """
     def wrapper(*args, **kwargs):
+        _validate_environment_variables()
         manager_host = os.environ[CLOUDIFY_HOST_ENV]
         manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
         manager_password = os.environ[CLOUDIFY_PASSWORD_ENV]
@@ -166,7 +188,7 @@ def _create_deployment(name, blueprint_name, inputs, client):
     cmdline = [
         'deployments', 'create', name, '-b', blueprint_name
     ]
-    # Handle the inputs: if a string - treat as a path to inputs file.
+    # Handle the inputs: if a list - pass as-is to the CLI.
     # If a dict - treat as actual inputs and use a temporary file to hold them.
     temp_inputs_file = None
     if inputs:
@@ -174,14 +196,15 @@ def _create_deployment(name, blueprint_name, inputs, client):
             with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False) as temp_inputs_file:
                 logger.info("Created temporary file for inputs: %s", temp_inputs_file.name)
                 yaml.safe_dump(inputs, temp_inputs_file)
-                inputs_file_name = temp_inputs_file.name
-        elif type(inputs) == str:
-            inputs_file_name = inputs
+                inputs_arg = [temp_inputs_file.name]
+        elif type(inputs) == list:
+            inputs_arg = inputs
         else:
             raise Exception(
-                "Unhandled inputs type: {}; should be either a dictionary (containing inputs) "
-                "or a string (containing a path to a file)".format(type(inputs)))
-        cmdline.extend(['-i', inputs_file_name])
+                "Unhandled inputs type: {} (contents: {}); should be either a dictionary (containing inputs) "
+                "or a list of strings".format(type(inputs), inputs))
+        for arg in inputs_arg:
+            cmdline.extend(['-i', arg])
     try:
         _cfy_cli(cmdline)
     finally:
@@ -276,19 +299,19 @@ def init(**kwargs):
     _init_profile()
 
 
-def create_deployment(name, blueprint, inputs_file, **kwargs):
-    _create_deployment(name, blueprint, inputs_file)
+def create_deployment(name, blueprint, inputs, **kwargs):
+    _create_deployment(name, blueprint, inputs)
 
 
-def create_environment(name, blueprint, inputs_file, outputs_file, **kwargs):
+def create_environment(name, blueprint, inputs, outputs_file, **kwargs):
     logger.info(
         "Creating environment; name=%s, blueprint=%s, inputs=%s, outputs=%s",
-        name, blueprint, inputs_file, outputs_file)
+        name, blueprint, inputs, outputs_file)
     blueprint_name = 'cfyci-{}-bp'.format(name)
     logger.info("Uploading blueprint: %s", blueprint_name)
     upload_blueprint(blueprint_name, blueprint)
-    logger.info("Creating deployment: %s", name)
-    _create_deployment(name, blueprint_name, inputs_file)
+    logger.info("Creating deployment: %s, using inputs: %s", name, inputs)
+    _create_deployment(name, blueprint_name, inputs)
     logger.info("Running the install workflow")
     install(name)
     write_environment_outputs(name, blueprint_name, outputs_file)
@@ -635,6 +658,7 @@ def main():
     # based on conditions. Therefore, we default certain parameters there to a certain
     # value, which is an agreed-upon representation for "I don't really want this".
     def optional_string(s):
+        print("optional_string: {} (type: {})".format(s, type(s)))
         if s is None or s in[OMITTED_ARG, '']:
             return None
         return s
@@ -658,6 +682,14 @@ def main():
             raise argparse.ArgumentTypeError("Path not found: {}".format(filtered))
         return filtered
 
+    class OptionalListAction(argparse.Action):
+        def __init__(self, option_strings, dest, nargs=None, **kwargs):
+            super(OptionalListAction, self).__init__(option_strings, dest, **kwargs)
+
+        def __call__(self, parser, namespace, values, option_string=None):
+            print("values={}".format(values))
+            setattr(namespace, self.dest, values)
+
     # On first glance, you may think that we should use mutually exclusive arguments
     # groups. Yeah, I know. However, note that we have to allow all argument combinations,
     # to pass through the parser, because the caller is likely to provide all parameters,
@@ -675,13 +707,13 @@ def main():
     create_deployment_parser = subparsers.add_parser('create-deployment', parents=[common_parent])
     create_deployment_parser.add_argument('--name', required=True)
     create_deployment_parser.add_argument('--blueprint', required=True)
-    create_deployment_parser.add_argument('--inputs', dest='inputs_file', type=optional_existing_path)
+    create_deployment_parser.add_argument('--inputs', nargs="*", type=optional_string, action=OptionalListAction)
     create_deployment_parser.set_defaults(func=create_deployment)
 
     create_environment_parser = subparsers.add_parser('create-environment', parents=[common_parent])
     create_environment_parser.add_argument('--name', required=True)
     create_environment_parser.add_argument('--blueprint', required=True)
-    create_environment_parser.add_argument('--inputs', dest='inputs_file', type=optional_existing_path)
+    create_environment_parser.add_argument('--inputs', dest='inputs', nargs="*", type=optional_string, action=OptionalListAction)
     create_environment_parser.add_argument('--outputs-file', dest='outputs_file', type=optional_string)
     create_environment_parser.set_defaults(func=create_environment)
 
