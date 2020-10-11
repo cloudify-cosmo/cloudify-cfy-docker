@@ -1,5 +1,5 @@
 FROM alpine:3.12.0
-RUN apk add --no-cache python2 git openssh-client curl gcc python2-dev musl-dev libffi-dev openssl-dev make jq && \
+RUN apk add --no-cache python2 git openssh-client curl gcc python2-dev musl-dev libffi-dev openssl-dev make jq sudo && \
     curl https://bootstrap.pypa.io/get-pip.py -o get-pip.py && \
     python get-pip.py --no-cache-dir && \
     rm get-pip.py && \
