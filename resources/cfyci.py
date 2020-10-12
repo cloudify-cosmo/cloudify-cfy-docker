@@ -75,6 +75,8 @@ def _cfy_cli_inner(cmdline, shell=False):
     Typically, you would want to call "_cfy_cli" instead of this one.
     """
     env = dict(os.environ)
+    if CLOUDIFY_TENANT_ENV not in env:
+        env[CLOUDIFY_TENANT_ENV] = DEFAULT_TENANT_NAME
     # If "trust all" is in effect, then disable this warning and
     # assume the user knows what they're doing.
     if _use_ssl() and get_ssl_trust_all():
@@ -91,16 +93,14 @@ def _cfy_cli_inner(cmdline, shell=False):
 def _init_profile():
     manager_host = os.environ[CLOUDIFY_HOST_ENV]
     manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
-    manager_tenant = os.environ.get(CLOUDIFY_TENANT_ENV, DEFAULT_TENANT_NAME)
 
     init_cmdline = [
-        'profile', 'use', manager_host,
-        '-t', manager_tenant
+        'profile', 'use', manager_host
     ]
     if _use_ssl():
         init_cmdline.append('--ssl')
 
-    logger.info("Initializing; host=%s, user=%s, tenant=%s", manager_host, manager_user, manager_tenant)
+    logger.info("Initializing; host=%s, user=%s", manager_host, manager_user)
     _cfy_cli_inner(init_cmdline)
     logger.info("Profile created successfully")
 
