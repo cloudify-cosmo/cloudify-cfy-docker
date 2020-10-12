@@ -69,7 +69,7 @@ def _use_ssl():
     return os.environ.get(CLOUDIFY_SSL_ENV, '').lower() != 'false'
 
 
-def _cfy_cli_inner(cmdline):
+def _cfy_cli_inner(cmdline, shell=False):
     """
     Lowest layer of calling the Cloudify CLI.
     Typically, you would want to call "_cfy_cli" instead of this one.
@@ -79,10 +79,13 @@ def _cfy_cli_inner(cmdline):
     # assume the user knows what they're doing.
     if _use_ssl() and get_ssl_trust_all():
         env['PYTHONWARNINGS'] = "ignore:Unverified HTTPS request"
-    full_cmdline = ['cfy']
-    full_cmdline.extend(cmdline)
+    if shell:
+        full_cmdline = "cfy {}".format(cmdline)
+    else:
+        full_cmdline = ['cfy']
+        full_cmdline.extend(cmdline)
     logger.info("Running: %s", full_cmdline)
-    subprocess.check_call(full_cmdline, env=env)
+    subprocess.check_call(full_cmdline, env=env, shell=shell)
 
 
 def _init_profile():
@@ -102,7 +105,7 @@ def _init_profile():
     logger.info("Profile created successfully")
 
 
-def _cfy_cli(cmdline):
+def _cfy_cli(cmdline, shell=False):
     """
     Use this in order to call the CLI. It checks first to see if a profile needs
     to be created, and creates one if so.
@@ -110,7 +113,7 @@ def _cfy_cli(cmdline):
     if not os.path.isdir(CLOUDIFY_WORKDIR):
         logger.info("First-time CLI invocation; creating CLI profile")
         _init_profile()
-    _cfy_cli_inner(cmdline)
+    _cfy_cli_inner(cmdline, shell=shell)
 
 
 def with_client(func):
@@ -627,6 +630,13 @@ def delete_environment(name, delete_blueprint, ignore_failure, client, **kwargs)
             _cfy_cli(['blueprints', 'delete', name])
 
 
+def cli(command, **kwargs):
+    logger.info(
+        "Running CLI command: %s", command
+    )
+    _cfy_cli(command, shell=True)
+
+
 def main():
     # This makes life easier when we need to call this script when certain
     # parameters are not required by the caller, but the caller must provide
@@ -694,6 +704,10 @@ def main():
     delete_environment_parser.add_argument('--delete-blueprint', type=boolean_string)
     delete_environment_parser.add_argument('--ignore-failure', type=boolean_string)
     delete_environment_parser.set_defaults(func=delete_environment)
+
+    cli_parser = subparsers.add_parser('cli', parents=[common_parent])
+    cli_parser.add_argument('--command', required=True)
+    cli_parser.set_defaults(func=cli)
 
     integrations_parent = argparse.ArgumentParser(add_help=False, parents=[common_parent])
     integrations_parent.add_argument('--name', required=True)
