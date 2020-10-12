@@ -618,16 +618,23 @@ def delete_environment(name, delete_blueprint, ignore_failure, client, **kwargs)
         name, delete_blueprint, ignore_failure)
     logger.info("Running the uninstall workflow")
     uninstall(name, ignore_failure)
+    # If we're asked to delete the blueprint as well, then get the blueprint
+    # ID before we delete the deployment.
+    if delete_blueprint:
+        deployment = client.deployments.get(name)
+        blueprint_id = deployment.blueprint_id
+    else:
+        blueprint_id = None
     logger.info("Deleting deployment")
     _delete_deployment(name)
-    if delete_blueprint:
-        logger.info("Checking if any deployments exist for blueprint '%s'", name)
-        deployments = client.deployments.list(blueprint_id=name)
+    if blueprint_id:
+        logger.info("Checking if any deployments exist for blueprint '%s'", blueprint_id)
+        deployments = client.deployments.list(blueprint_id=blueprint_id)
         if deployments:
             logger.info("Found at least one more deployment; not deleting blueprint")
         else:
-            logger.info("Deleting blueprint: %s", name)
-            _cfy_cli(['blueprints', 'delete', name])
+            logger.info("Deleting blueprint: %s", blueprint_id)
+            _cfy_cli(['blueprints', 'delete', blueprint_id])
 
 
 def cli(command, **kwargs):
