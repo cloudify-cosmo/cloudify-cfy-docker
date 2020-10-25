@@ -98,7 +98,6 @@ def _cfy_cli_inner(cmdline, shell=False, capture_stdout=False):
 def _init_profile():
     manager_host = os.environ[CLOUDIFY_HOST_ENV]
     manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
-    manager_tenant = os.environ.get(CLOUDIFY_TENANT_ENV, DEFAULT_TENANT_NAME)
 
     init_cmdline = [
         'profile', 'use', manager_host
