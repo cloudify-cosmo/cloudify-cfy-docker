@@ -69,7 +69,7 @@ def _use_ssl():
     return os.environ.get(CLOUDIFY_SSL_ENV, '').lower() != 'false'
 
 
-def _cfy_cli_inner(cmdline, shell=False):
+def _cfy_cli_inner(cmdline, shell=False, capture_stdout=False):
     """
     Lowest layer of calling the Cloudify CLI.
     Typically, you would want to call "_cfy_cli" instead of this one.
@@ -87,7 +87,12 @@ def _cfy_cli_inner(cmdline, shell=False):
         full_cmdline = ['cfy']
         full_cmdline.extend(cmdline)
     logger.info("Running: %s", full_cmdline)
-    subprocess.check_call(full_cmdline, env=env, shell=shell)
+    if capture_stdout:
+        stdout_contents = subprocess.check_output(full_cmdline, env=env, shell=shell)
+    else:
+        subprocess.check_call(full_cmdline, env=env, shell=shell)
+        stdout_contents = None
+    return stdout_contents
 
 
 def _init_profile():
@@ -105,7 +110,7 @@ def _init_profile():
     logger.info("Profile created successfully")
 
 
-def _cfy_cli(cmdline, shell=False):
+def _cfy_cli(cmdline, shell=False, capture_stdout=False):
     """
     Use this in order to call the CLI. It checks first to see if a profile needs
     to be created, and creates one if so.
@@ -113,7 +118,7 @@ def _cfy_cli(cmdline, shell=False):
     if not os.path.isdir(CLOUDIFY_WORKDIR):
         logger.info("First-time CLI invocation; creating CLI profile")
         _init_profile()
-    _cfy_cli_inner(cmdline, shell=shell)
+    return _cfy_cli_inner(cmdline, shell=shell, capture_stdout=capture_stdout)
 
 
 def with_client(func):
@@ -637,11 +642,13 @@ def delete_environment(name, delete_blueprint, ignore_failure, client, **kwargs)
             _cfy_cli(['blueprints', 'delete', blueprint_id])
 
 
-def cli(command, **kwargs):
+def cli(command, set_output, **kwargs):
     logger.info(
         "Running CLI command: %s", command
     )
-    _cfy_cli(command, shell=True)
+    stdout_contents = _cfy_cli(command, shell=True, capture_stdout=set_output)
+    if set_output:
+        print("::set-output name=cli-output::%s".format(stdout_contents))
 
 
 def main():
@@ -714,6 +721,7 @@ def main():
 
     cli_parser = subparsers.add_parser('cli', parents=[common_parent])
     cli_parser.add_argument('--command', required=True)
+    cli_parser.add_argument('--set-output', action='store_true', default=False)
     cli_parser.set_defaults(func=cli)
 
     integrations_parent = argparse.ArgumentParser(add_help=False, parents=[common_parent])
