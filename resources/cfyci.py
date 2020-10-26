@@ -60,6 +60,10 @@ def read_json_or_yaml(path):
         return yaml.load(f)
 
 
+def set_github_output(name, value):
+    print("::set-output name=%s::%s".format(name, value))
+
+
 def _use_ssl():
     """
     Determines if SSL should be used when communicating with Cloudify Manager.
@@ -255,25 +259,26 @@ def _delete_deployment(name, client):
 
 
 @with_client
-def get_environment_data(name, blueprint_id, client):
+def get_environment_data(name, client):
+    deployment = client.deployments.get(name, _include=['blueprint_id'])
     outputs = client.deployments.outputs.get(name)
     capabilities = client.deployments.capabilities.get(name)
     return {
-        "blueprint_id": blueprint_id,
+        "blueprint_id": deployment.blueprint_id,
         "deployment_id": name,
         "outputs": outputs['outputs'],
         "capabilities": capabilities['capabilities']
     }
 
 
-def write_environment_outputs(name, blueprint_id, outputs_file):
+def write_environment_outputs(name, outputs_file, **kwargs):
     if not (outputs_file or IS_GITHUB):
         return
-    env_data = get_environment_data(name, blueprint_id)
+    env_data = get_environment_data(name)
     if IS_GITHUB:
         # Set the environment's data as an output.
         logger.info("Setting environment data output variable: %s", env_data)
-        print("::set-output name=environment-data::%s".format(json.dumps(env_data)))
+        set_github_output('environment-data', json.dumps(env_data))
     if outputs_file:
         logger.info("Writing environment data to %s", outputs_file)
         with open(outputs_file, 'w') as f:
@@ -299,7 +304,23 @@ def create_environment(name, blueprint, inputs_file, outputs_file, **kwargs):
     _create_deployment(name, blueprint_name, inputs_file)
     logger.info("Running the install workflow")
     install(name)
-    write_environment_outputs(name, blueprint_name, outputs_file)
+    write_environment_outputs(name, outputs_file)
+
+
+@with_client
+def get_deployment(deployment_id, client, **kwargs):
+    logger.info("Retrieving deployment information for '%s'", deployment_id)
+    try:
+        deployment = client.deployments.get(deployment_id)
+    except CloudifyClientError as ex:
+        if ex.status_code == httplib.NOT_FOUND:
+            output_value = ''
+        else:
+            raise
+    else:
+        output_value = json.dumps(deployment)
+    if IS_GITHUB:
+        set_github_output('deployment_info', output_value)
 
 
 class CfyIntegration(object):
@@ -362,7 +383,7 @@ class CfyIntegration(object):
         logger.info("Deployment created successfully; installing it")
         install(self._deployment_id)
         logger.info("Installation ended successfully")
-        write_environment_outputs(self._deployment_id, blueprint_name, self._outputs_file)
+        write_environment_outputs(self._deployment_id, self._outputs_file)
 
 
 class CfyTerraformIntegration(CfyIntegration):
@@ -648,7 +669,7 @@ def cli(command, set_output, **kwargs):
     )
     stdout_contents = _cfy_cli(command, shell=True, capture_stdout=set_output)
     if set_output:
-        print("::set-output name=cli-output::%s".format(stdout_contents))
+        set_github_output('cli-output', stdout_contents)
 
 
 def main():
@@ -723,6 +744,11 @@ def main():
     cli_parser.add_argument('--command', required=True)
     cli_parser.add_argument('--set-output', action='store_true', default=False)
     cli_parser.set_defaults(func=cli)
+
+    get_environment_data_parser = subparsers.add_parser('get-environment-data', parents=[common_parent])
+    get_environment_data_parser.add_argument('--name', required=True)
+    get_environment_data_parser.add_argument('--outputs-file', type=optional_string)
+    get_environment_data_parser.set_defaults(func=write_environment_outputs)
 
     integrations_parent = argparse.ArgumentParser(add_help=False, parents=[common_parent])
     integrations_parent.add_argument('--name', required=True)
