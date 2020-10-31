@@ -672,6 +672,17 @@ def cli(command, set_output, **kwargs):
         set_github_output('cli-output', stdout_contents)
 
 
+def execute_workflow(name, workflow, parameters_file, **kwargs):
+    logger.info(
+        "Executing workflow '%s' on deployment '%s'; parameters file: %s",
+        name, workflow, parameters_file or '<none>'
+    )
+    cmdline = ['executions', 'start', workflow, '-d', name]
+    if parameters_file:
+        cmdline.extend(['-p', parameters_file])
+    _cfy_cli(cmdline)
+
+
 def main():
     # This makes life easier when we need to call this script when certain
     # parameters are not required by the caller, but the caller must provide
@@ -744,6 +755,12 @@ def main():
     cli_parser.add_argument('--command', required=True)
     cli_parser.add_argument('--set-output', action='store_true', default=False)
     cli_parser.set_defaults(func=cli)
+
+    execute_workflow_parser = subparsers.add_parser('execute-workflow', parents=[common_parent])
+    execute_workflow_parser.add_argument('--name', required=True)
+    execute_workflow_parser.add_argument('--workflow', required=True)
+    execute_workflow_parser.add_argument('--parameters-file', type=optional_string)
+    execute_workflow_parser.set_defaults(func=execute_workflow)
 
     get_environment_data_parser = subparsers.add_parser('get-environment-data', parents=[common_parent])
     get_environment_data_parser.add_argument('--name', required=True)
