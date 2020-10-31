@@ -753,7 +753,7 @@ def main():
 
     cli_parser = subparsers.add_parser('cli', parents=[common_parent])
     cli_parser.add_argument('--command', required=True)
-    cli_parser.add_argument('--set-output', action='store_true', default=False)
+    cli_parser.add_argument('--set-output', type=boolean_string)
     cli_parser.set_defaults(func=cli)
 
     execute_workflow_parser = subparsers.add_parser('execute-workflow', parents=[common_parent])
