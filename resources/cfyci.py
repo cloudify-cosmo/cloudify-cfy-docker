@@ -663,6 +663,50 @@ def delete_environment(name, delete_blueprint, ignore_failure, client, **kwargs)
             _cfy_cli(['blueprints', 'delete', blueprint_id])
 
 
+@with_client
+def install_or_update(
+        name, blueprint_id, delete_old_blueprint, inputs_file, outputs_file,
+        skip_install, skip_uninstall, skip_reinstall, install_first,
+        client, **kwargs):
+    logger.info("Trying to get deployment '%s'", name)
+    try:
+        deployment = client.deployments.get(name, _include=['blueprint_id'])
+    except CloudifyClientError as ex:
+        if ex.status_code != httplib.NOT_FOUND:
+            raise
+        logger.info("Deployment '%s' not found", name)
+        create_deployment(name, blueprint_id, inputs_file)
+        logger.info("Installing deployment '%s'", name)
+        install(name)
+    else:
+        # Deployment exists
+        logger.info("Deployment '%s' exists; updating it with blueprint '%s'", name, blueprint_id)
+        old_blueprint_id = deployment.blueprint_id
+        cmdline = ['deployments', 'update', name, '-b', blueprint_id]
+        if inputs_file:
+            cmdline.extend(['-i', inputs_file])
+        if skip_install:
+            cmdline.append('--skip-install')
+        if skip_uninstall:
+            cmdline.append('--skip-uninstall')
+        if skip_reinstall:
+            cmdline.append('--skip-reinstall')
+        if install_first:
+            cmdline.append('--install-first')
+        _cfy_cli(cmdline)
+        if delete_old_blueprint:
+            logger.info("Checking if blueprint '%s' has any deployments", old_blueprint_id)
+            old_blueprint_deployments = client.deployments.list(
+                blueprint_id=old_blueprint_id,
+                _all_tenants=True)
+            if not old_blueprint_deployments:
+                logger.info("Deleting blueprint '%s'", old_blueprint_id)
+                _cfy_cli(['blueprints', 'delete', old_blueprint_id])
+            else:
+                logger.info("Blueprint '%s' still has deployments; not deleting it", old_blueprint_id)
+    write_environment_outputs(name, outputs_file)
+
+
 def cli(command, set_output, **kwargs):
     logger.info(
         "Running CLI command: %s", command
@@ -719,6 +763,12 @@ def main():
     # to pass through the parser, because the caller is likely to provide all parameters,
     # with some of them blank.
 
+    deployment_update_parser = argparse.ArgumentParser(add_help=False)
+    deployment_update_parser.add_argument('--skip-install', type=boolean_string)
+    deployment_update_parser.add_argument('--skip-uninstall', type=boolean_string)
+    deployment_update_parser.add_argument('--skip-reinstall', type=boolean_string)
+    deployment_update_parser.add_argument('--install-first', type=boolean_string)
+
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
 
@@ -750,6 +800,14 @@ def main():
     delete_environment_parser.add_argument('--delete-blueprint', type=boolean_string)
     delete_environment_parser.add_argument('--ignore-failure', type=boolean_string)
     delete_environment_parser.set_defaults(func=delete_environment)
+
+    install_or_update_parser = subparsers.add_parser('install-or-update', parents=[common_parent, deployment_update_parser])
+    install_or_update_parser.add_argument('--name', required=True)
+    install_or_update_parser.add_argument('--blueprint-id', required=True)
+    install_or_update_parser.add_argument('--delete-old-blueprint', type=boolean_string)
+    install_or_update_parser.add_argument('--inputs', dest='inputs_file', type=optional_existing_path)
+    install_or_update_parser.add_argument('--outputs-file', dest='outputs_file', type=optional_string)
+    install_or_update_parser.set_defaults(func=install_or_update)
 
     cli_parser = subparsers.add_parser('cli', parents=[common_parent])
     cli_parser.add_argument('--command', required=True)
