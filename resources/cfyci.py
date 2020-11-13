@@ -781,13 +781,13 @@ def main():
     create_deployment_parser = subparsers.add_parser('create-deployment', parents=[common_parent])
     create_deployment_parser.add_argument('--name', required=True)
     create_deployment_parser.add_argument('--blueprint', required=True)
-    create_deployment_parser.add_argument('--inputs', dest='inputs_file', type=optional_existing_path)
+    create_deployment_parser.add_argument('--inputs-file', type=optional_existing_path)
     create_deployment_parser.set_defaults(func=create_deployment)
 
     create_environment_parser = subparsers.add_parser('create-environment', parents=[common_parent])
     create_environment_parser.add_argument('--name', required=True)
     create_environment_parser.add_argument('--blueprint', required=True)
-    create_environment_parser.add_argument('--inputs', dest='inputs_file', type=optional_existing_path)
+    create_environment_parser.add_argument('--inputs-file', type=optional_existing_path)
     create_environment_parser.add_argument('--outputs-file', dest='outputs_file', type=optional_string)
     create_environment_parser.set_defaults(func=create_environment)
 
@@ -805,7 +805,7 @@ def main():
     install_or_update_parser.add_argument('--name', required=True)
     install_or_update_parser.add_argument('--blueprint-id', required=True)
     install_or_update_parser.add_argument('--delete-old-blueprint', type=boolean_string)
-    install_or_update_parser.add_argument('--inputs', dest='inputs_file', type=optional_existing_path)
+    install_or_update_parser.add_argument('--inputs-file', type=optional_existing_path)
     install_or_update_parser.add_argument('--outputs-file', dest='outputs_file', type=optional_string)
     install_or_update_parser.set_defaults(func=install_or_update)
 
