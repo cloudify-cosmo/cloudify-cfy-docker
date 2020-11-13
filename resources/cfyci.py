@@ -83,8 +83,11 @@ def _cfy_cli_inner(cmdline, shell=False, capture_stdout=False):
         env[CLOUDIFY_TENANT_ENV] = DEFAULT_TENANT_NAME
     # If "trust all" is in effect, then disable this warning and
     # assume the user knows what they're doing.
+    ignored_warnings = ["Python 2 is no longer supported"]
     if _use_ssl() and get_ssl_trust_all():
-        env['PYTHONWARNINGS'] = "ignore:Unverified HTTPS request"
+        ignored_warnings.append("Unverified HTTPS request")
+    if ignored_warnings:
+        env['PYTHONWARNINGS'] = ','.join(["ignore:{}".format(x) for x in ignored_warnings])
     if shell:
         full_cmdline = "cfy {}".format(cmdline)
     else:
