@@ -12,7 +12,6 @@ def configuration = [vaultUrl: "${env.VAULT_URL}",  vaultCredentialId: 'vault-ap
 pipeline {
     agent {
         kubernetes {
-            label 'cli-docker'
             defaultContainer 'jnlp'
             yamlFile 'jenkins/build-pod.yaml'
         }
