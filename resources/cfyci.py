@@ -60,6 +60,10 @@ def read_json_or_yaml(path):
         return yaml.load(f)
 
 
+def set_github_output(name, value):
+    print("::set-output name=%s::%s".format(name, value))
+
+
 def _use_ssl():
     """
     Determines if SSL should be used when communicating with Cloudify Manager.
@@ -79,8 +83,11 @@ def _cfy_cli_inner(cmdline, shell=False, capture_stdout=False):
         env[CLOUDIFY_TENANT_ENV] = DEFAULT_TENANT_NAME
     # If "trust all" is in effect, then disable this warning and
     # assume the user knows what they're doing.
+    ignored_warnings = ["Python 2 is no longer supported"]
     if _use_ssl() and get_ssl_trust_all():
-        env['PYTHONWARNINGS'] = "ignore:Unverified HTTPS request"
+        ignored_warnings.append("Unverified HTTPS request")
+    if ignored_warnings:
+        env['PYTHONWARNINGS'] = ','.join(["ignore:{}".format(x) for x in ignored_warnings])
     if shell:
         full_cmdline = "cfy {}".format(cmdline)
     else:
@@ -255,25 +262,26 @@ def _delete_deployment(name, client):
 
 
 @with_client
-def get_environment_data(name, blueprint_id, client):
+def get_environment_data(name, client):
+    deployment = client.deployments.get(name, _include=['blueprint_id'])
     outputs = client.deployments.outputs.get(name)
     capabilities = client.deployments.capabilities.get(name)
     return {
-        "blueprint_id": blueprint_id,
+        "blueprint_id": deployment.blueprint_id,
         "deployment_id": name,
         "outputs": outputs['outputs'],
         "capabilities": capabilities['capabilities']
     }
 
 
-def write_environment_outputs(name, blueprint_id, outputs_file):
+def write_environment_outputs(name, outputs_file, **kwargs):
     if not (outputs_file or IS_GITHUB):
         return
     env_data = get_environment_data(name, blueprint_id)
     if IS_GITHUB:
         # Set the environment's data as an output.
         logger.info("Setting environment data output variable: %s", env_data)
-        print("::set-output name=environment-data::%s".format(json.dumps(env_data)))
+        set_github_output('environment-data', json.dumps(env_data))
     if outputs_file:
         logger.info("Writing environment data to %s", outputs_file)
         with open(outputs_file, 'w') as f:
@@ -300,6 +308,22 @@ def create_environment(name, blueprint, inputs_file, outputs_file, **kwargs):
     logger.info("Running the install workflow")
     install(name)
     write_environment_outputs(name, blueprint_name, outputs_file)
+
+
+@with_client
+def get_deployment(deployment_id, client, **kwargs):
+    logger.info("Retrieving deployment information for '%s'", deployment_id)
+    try:
+        deployment = client.deployments.get(deployment_id)
+    except CloudifyClientError as ex:
+        if ex.status_code == httplib.NOT_FOUND:
+            output_value = ''
+        else:
+            raise
+    else:
+        output_value = json.dumps(deployment)
+    if IS_GITHUB:
+        set_github_output('deployment_info', output_value)
 
 
 class CfyIntegration(object):
@@ -362,7 +386,7 @@ class CfyIntegration(object):
         logger.info("Deployment created successfully; installing it")
         install(self._deployment_id)
         logger.info("Installation ended successfully")
-        write_environment_outputs(self._deployment_id, blueprint_name, self._outputs_file)
+        write_environment_outputs(self._deployment_id, self._outputs_file)
 
 
 class CfyTerraformIntegration(CfyIntegration):
@@ -642,13 +666,68 @@ def delete_environment(name, delete_blueprint, ignore_failure, client, **kwargs)
             _cfy_cli(['blueprints', 'delete', blueprint_id])
 
 
+@with_client
+def install_or_update(
+        name, blueprint_id, delete_old_blueprint, inputs_file, outputs_file,
+        skip_install, skip_uninstall, skip_reinstall, install_first,
+        client, **kwargs):
+    logger.info("Trying to get deployment '%s'", name)
+    try:
+        deployment = client.deployments.get(name, _include=['blueprint_id'])
+    except CloudifyClientError as ex:
+        if ex.status_code != httplib.NOT_FOUND:
+            raise
+        logger.info("Deployment '%s' not found", name)
+        create_deployment(name, blueprint_id, inputs_file)
+        logger.info("Installing deployment '%s'", name)
+        install(name)
+    else:
+        # Deployment exists
+        logger.info("Deployment '%s' exists; updating it with blueprint '%s'", name, blueprint_id)
+        old_blueprint_id = deployment.blueprint_id
+        cmdline = ['deployments', 'update', name, '-b', blueprint_id]
+        if inputs_file:
+            cmdline.extend(['-i', inputs_file])
+        if skip_install:
+            cmdline.append('--skip-install')
+        if skip_uninstall:
+            cmdline.append('--skip-uninstall')
+        if skip_reinstall:
+            cmdline.append('--skip-reinstall')
+        if install_first:
+            cmdline.append('--install-first')
+        _cfy_cli(cmdline)
+        if delete_old_blueprint:
+            logger.info("Checking if blueprint '%s' has any deployments", old_blueprint_id)
+            old_blueprint_deployments = client.deployments.list(
+                blueprint_id=old_blueprint_id,
+                _all_tenants=True)
+            if not old_blueprint_deployments:
+                logger.info("Deleting blueprint '%s'", old_blueprint_id)
+                _cfy_cli(['blueprints', 'delete', old_blueprint_id])
+            else:
+                logger.info("Blueprint '%s' still has deployments; not deleting it", old_blueprint_id)
+    write_environment_outputs(name, outputs_file)
+
+
 def cli(command, set_output, **kwargs):
     logger.info(
         "Running CLI command: %s", command
     )
     stdout_contents = _cfy_cli(command, shell=True, capture_stdout=set_output)
     if set_output:
-        print("::set-output name=cli-output::%s".format(stdout_contents))
+        set_github_output('cli-output', stdout_contents)
+
+
+def execute_workflow(name, workflow, parameters_file, **kwargs):
+    logger.info(
+        "Executing workflow '%s' on deployment '%s'; parameters file: %s",
+        name, workflow, parameters_file or '<none>'
+    )
+    cmdline = ['executions', 'start', workflow, '-d', name]
+    if parameters_file:
+        cmdline.extend(['-p', parameters_file])
+    _cfy_cli(cmdline)
 
 
 def main():
@@ -687,6 +766,12 @@ def main():
     # to pass through the parser, because the caller is likely to provide all parameters,
     # with some of them blank.
 
+    deployment_update_parser = argparse.ArgumentParser(add_help=False)
+    deployment_update_parser.add_argument('--skip-install', type=boolean_string)
+    deployment_update_parser.add_argument('--skip-uninstall', type=boolean_string)
+    deployment_update_parser.add_argument('--skip-reinstall', type=boolean_string)
+    deployment_update_parser.add_argument('--install-first', type=boolean_string)
+
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers()
 
@@ -699,13 +784,13 @@ def main():
     create_deployment_parser = subparsers.add_parser('create-deployment', parents=[common_parent])
     create_deployment_parser.add_argument('--name', required=True)
     create_deployment_parser.add_argument('--blueprint', required=True)
-    create_deployment_parser.add_argument('--inputs', dest='inputs_file', type=optional_existing_path)
+    create_deployment_parser.add_argument('--inputs-file', type=optional_existing_path)
     create_deployment_parser.set_defaults(func=create_deployment)
 
     create_environment_parser = subparsers.add_parser('create-environment', parents=[common_parent])
     create_environment_parser.add_argument('--name', required=True)
     create_environment_parser.add_argument('--blueprint', required=True)
-    create_environment_parser.add_argument('--inputs', dest='inputs_file', type=optional_existing_path)
+    create_environment_parser.add_argument('--inputs-file', type=optional_existing_path)
     create_environment_parser.add_argument('--outputs-file', dest='outputs_file', type=optional_string)
     create_environment_parser.set_defaults(func=create_environment)
 
@@ -719,10 +804,29 @@ def main():
     delete_environment_parser.add_argument('--ignore-failure', type=boolean_string)
     delete_environment_parser.set_defaults(func=delete_environment)
 
+    install_or_update_parser = subparsers.add_parser('install-or-update', parents=[common_parent, deployment_update_parser])
+    install_or_update_parser.add_argument('--name', required=True)
+    install_or_update_parser.add_argument('--blueprint-id', required=True)
+    install_or_update_parser.add_argument('--delete-old-blueprint', type=boolean_string)
+    install_or_update_parser.add_argument('--inputs-file', type=optional_existing_path)
+    install_or_update_parser.add_argument('--outputs-file', dest='outputs_file', type=optional_string)
+    install_or_update_parser.set_defaults(func=install_or_update)
+
     cli_parser = subparsers.add_parser('cli', parents=[common_parent])
     cli_parser.add_argument('--command', required=True)
-    cli_parser.add_argument('--set-output', action='store_true', default=False)
+    cli_parser.add_argument('--set-output', type=boolean_string)
     cli_parser.set_defaults(func=cli)
+
+    execute_workflow_parser = subparsers.add_parser('execute-workflow', parents=[common_parent])
+    execute_workflow_parser.add_argument('--name', required=True)
+    execute_workflow_parser.add_argument('--workflow', required=True)
+    execute_workflow_parser.add_argument('--parameters-file', type=optional_string)
+    execute_workflow_parser.set_defaults(func=execute_workflow)
+
+    get_environment_data_parser = subparsers.add_parser('get-environment-data', parents=[common_parent])
+    get_environment_data_parser.add_argument('--name', required=True)
+    get_environment_data_parser.add_argument('--outputs-file', type=optional_string)
+    get_environment_data_parser.set_defaults(func=write_environment_outputs)
 
     integrations_parent = argparse.ArgumentParser(add_help=False, parents=[common_parent])
     integrations_parent.add_argument('--name', required=True)
