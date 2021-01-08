@@ -1,15 +1,12 @@
-#!/usr/bin/env python
+#!/usr/bin/python3
 
 """
 Wrapper script for executing Cloudify operations from CI/CD products.
 It uses a combination of CLI and REST API calls with the intention of
 making the usage of Cloudify from CI/CD products as effortless as possible.
 """
-from __future__ import print_function
-
 import argparse
 import json
-import httplib
 import io
 import logging
 import os
@@ -19,6 +16,7 @@ import time
 import tempfile
 import urllib3
 
+from http import HTTPStatus
 from string import Template
 
 import yaml
@@ -57,7 +55,7 @@ DEPLOYMENT_DELETE_TIMEOUT = int(os.environ.get(
 def read_json_or_yaml(path):
     # We assume here, of course, that any JSON file is also a YAML file.
     with io.open(path, 'r', encoding='UTF-8') as f:
-        return yaml.load(f)
+        return yaml.safe_load(f)
 
 
 def set_github_output(name, value):
@@ -83,7 +81,7 @@ def _cfy_cli_inner(cmdline, shell=False, capture_stdout=False):
         env[CLOUDIFY_TENANT_ENV] = DEFAULT_TENANT_NAME
     # If "trust all" is in effect, then disable this warning and
     # assume the user knows what they're doing.
-    ignored_warnings = ["Python 2 is no longer supported"]
+    ignored_warnings = []
     if _use_ssl() and get_ssl_trust_all():
         ignored_warnings.append("Unverified HTTPS request")
     if ignored_warnings:
@@ -186,7 +184,7 @@ def _create_deployment(name, blueprint_name, inputs, client):
     temp_inputs_file = None
     if inputs:
         if type(inputs) == dict:
-            with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False) as temp_inputs_file:
+            with tempfile.NamedTemporaryFile(mode='w', suffix=".yaml", delete=False) as temp_inputs_file:
                 logger.info("Created temporary file for inputs: %s", temp_inputs_file.name)
                 yaml.safe_dump(inputs, temp_inputs_file)
                 inputs_file_name = temp_inputs_file.name
@@ -250,7 +248,7 @@ def _delete_deployment(name, client):
             client.deployments.get(name)
             time.sleep(1)
         except CloudifyClientError as ex:
-            if ex.status_code == httplib.NOT_FOUND:
+            if ex.status_code == HTTPStatus.NOT_FOUND:
                 logger.info("Deployment deleted")
                 ended = True
                 break
@@ -316,7 +314,7 @@ def get_deployment(deployment_id, client, **kwargs):
     try:
         deployment = client.deployments.get(deployment_id)
     except CloudifyClientError as ex:
-        if ex.status_code == httplib.NOT_FOUND:
+        if ex.status_code == HTTPStatus.NOT_FOUND:
             output_value = ''
         else:
             raise
@@ -370,7 +368,7 @@ class CfyIntegration(object):
         try:
             client.blueprints.get(blueprint_name)
         except CloudifyClientError as ex:
-            if ex.status_code == httplib.NOT_FOUND:
+            if ex.status_code == HTTPStatus.NOT_FOUND:
                 _cfy_cli([
                     'blueprints', 'upload',
                     self._configuration['integration_blueprints_archive_url'],
@@ -417,7 +415,7 @@ class CfyTerraformIntegration(CfyIntegration):
         env_vars = {}
         if self._environment:
             env_vars.update(read_json_or_yaml(self._environment))
-        for key, value in self._environment_mapping.iteritems():
+        for key, value in self._environment_mapping.items():
             if key in os.environ:
                 env_vars[value] = os.environ[key]
         if env_vars:
@@ -508,7 +506,7 @@ class CfyCFNIntegration(CfyIntegration):
             resource_config_kwargs['Parameters'] = [{
                 'ParameterKey': key,
                 'ParameterValue': value
-            } for key, value in parameters.iteritems()]
+            } for key, value in parameters.items()]
         if self._template_url:
             logger.info("Will use template from %s", self._template_url)
             resource_config_kwargs['TemplateURL'] = self._template_url
@@ -675,7 +673,7 @@ def install_or_update(
     try:
         deployment = client.deployments.get(name, _include=['blueprint_id'])
     except CloudifyClientError as ex:
-        if ex.status_code != httplib.NOT_FOUND:
+        if ex.status_code != HTTPStatus.NOT_FOUND:
             raise
         logger.info("Deployment '%s' not found", name)
         create_deployment(name, blueprint_id, inputs_file)
@@ -884,7 +882,7 @@ def main():
     # action inputs. Therefore, we allow passing them as templates, and we
     # expand them here.
     if IS_GITHUB:
-        for key, value in vars_map.iteritems():
+        for key, value in vars_map.items():
             if value and isinstance(value, str):
                 vars_map[key] = Template(value).substitute(os.environ)
 
