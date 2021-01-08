@@ -277,7 +277,7 @@ def get_environment_data(name, client):
 def write_environment_outputs(name, outputs_file, **kwargs):
     if not (outputs_file or IS_GITHUB):
         return
-    env_data = get_environment_data(name, blueprint_id)
+    env_data = get_environment_data(name)
     if IS_GITHUB:
         # Set the environment's data as an output.
         logger.info("Setting environment data output variable: %s", env_data)
@@ -307,7 +307,7 @@ def create_environment(name, blueprint, inputs_file, outputs_file, **kwargs):
     _create_deployment(name, blueprint_name, inputs_file)
     logger.info("Running the install workflow")
     install(name)
-    write_environment_outputs(name, blueprint_name, outputs_file)
+    write_environment_outputs(name, outputs_file)
 
 
 @with_client
