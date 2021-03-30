@@ -6,6 +6,7 @@ RUN yum -y update && \
     python3 get-pip.py --no-cache-dir && \
     rm -f get-pip.py && \
     pip install --no-cache-dir cloudify==5.1.1 && \
-    rm -rf ~/.cache
+    rm -rf ~/.cache && \
+    set -x
 COPY resources/cfyci.py /usr/local/bin/cfyci
 COPY resources/config.yaml /etc/cfyci/config.yaml
