@@ -175,7 +175,7 @@ def wait_for_and_validate_execution(client, execution):
 
 
 @with_client
-def _create_deployment(name, blueprint_name, inputs, client):
+def _create_deployment(name, blueprint_name, inputs, labels, client):
     cmdline = [
         'deployments', 'create', name, '-b', blueprint_name
     ]
@@ -195,6 +195,16 @@ def _create_deployment(name, blueprint_name, inputs, client):
                 "Unhandled inputs type: {}; should be either a dictionary (containing inputs) "
                 "or a string (containing a path to a file)".format(type(inputs)))
         cmdline.extend(['-i', inputs_file_name])
+    # Handle the labels: should be a string - a labels list of the form <key>:<value>,<key>:<value>. 
+    # Any comma and colon in <value> must be escaped with \.
+    if labels:
+        if type(labels) == str:
+            pass
+        else:
+            raise Exception(
+                "Unhandled inputs type: {}; should be a string containing a list of the form "
+                "<key>:<value>,<key>:<value>.".format(type(labels)))
+        cmdline.extend(['--labels', labels])
     try:
         _cfy_cli(cmdline)
     finally:
@@ -290,19 +300,19 @@ def init(**kwargs):
     _init_profile()
 
 
-def create_deployment(name, blueprint, inputs_file, **kwargs):
-    _create_deployment(name, blueprint, inputs_file)
+def create_deployment(name, blueprint, inputs_file, labels, **kwargs):
+    _create_deployment(name, blueprint, inputs_file, labels)
 
 
-def create_environment(name, blueprint, inputs_file, outputs_file, **kwargs):
+def create_environment(name, blueprint, inputs_file, labels, outputs_file, **kwargs):
     logger.info(
-        "Creating environment; name=%s, blueprint=%s, inputs=%s, outputs=%s",
-        name, blueprint, inputs_file, outputs_file)
+        "Creating environment; name=%s, blueprint=%s, inputs=%s, labels=%s, outputs=%s",
+        name, blueprint, inputs_file, labels, outputs_file)
     blueprint_name = 'cfyci-{}-bp'.format(name)
     logger.info("Uploading blueprint: %s", blueprint_name)
     upload_blueprint(blueprint_name, blueprint)
     logger.info("Creating deployment: %s", name)
-    _create_deployment(name, blueprint_name, inputs_file)
+    _create_deployment(name, blueprint_name, inputs_file, labels)
     logger.info("Running the install workflow")
     install(name)
     write_environment_outputs(name, outputs_file)
@@ -666,7 +676,7 @@ def delete_environment(name, delete_blueprint, ignore_failure, client, **kwargs)
 
 @with_client
 def install_or_update(
-        name, blueprint_id, delete_old_blueprint, inputs_file, outputs_file,
+        name, blueprint_id, delete_old_blueprint, inputs_file, labels, outputs_file,
         skip_install, skip_uninstall, skip_reinstall, install_first,
         client, **kwargs):
     logger.info("Trying to get deployment '%s'", name)
@@ -676,7 +686,7 @@ def install_or_update(
         if ex.status_code != HTTPStatus.NOT_FOUND:
             raise
         logger.info("Deployment '%s' not found", name)
-        create_deployment(name, blueprint_id, inputs_file)
+        create_deployment(name, blueprint_id, inputs_file, labels)
         logger.info("Installing deployment '%s'", name)
         install(name)
     else:
@@ -783,6 +793,7 @@ def main():
     create_deployment_parser.add_argument('--name', required=True)
     create_deployment_parser.add_argument('--blueprint', required=True)
     create_deployment_parser.add_argument('--inputs-file', type=optional_existing_path)
+    create_deployment_parser.add_argument('--labels', type=optional_string)
     create_deployment_parser.set_defaults(func=create_deployment)
 
     create_environment_parser = subparsers.add_parser('create-environment', parents=[common_parent])
@@ -790,6 +801,7 @@ def main():
     create_environment_parser.add_argument('--blueprint', required=True)
     create_environment_parser.add_argument('--inputs-file', type=optional_existing_path)
     create_environment_parser.add_argument('--outputs-file', dest='outputs_file', type=optional_string)
+    create_environment_parser.add_argument('--labels', type=optional_string)
     create_environment_parser.set_defaults(func=create_environment)
 
     delete_deployment_parser = subparsers.add_parser('delete-deployment', parents=[common_parent])
@@ -808,6 +820,7 @@ def main():
     install_or_update_parser.add_argument('--delete-old-blueprint', type=boolean_string)
     install_or_update_parser.add_argument('--inputs-file', type=optional_existing_path)
     install_or_update_parser.add_argument('--outputs-file', dest='outputs_file', type=optional_string)
+    install_or_update_parser.add_argument('--labels', type=optional_string)
     install_or_update_parser.set_defaults(func=install_or_update)
 
     cli_parser = subparsers.add_parser('cli', parents=[common_parent])
