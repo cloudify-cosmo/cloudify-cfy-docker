@@ -1,15 +1,12 @@
-#!/usr/bin/env python
+#!/usr/bin/python3
 
 """
 Wrapper script for executing Cloudify operations from CI/CD products.
 It uses a combination of CLI and REST API calls with the intention of
 making the usage of Cloudify from CI/CD products as effortless as possible.
 """
-from __future__ import print_function
-
 import argparse
 import json
-import httplib
 import io
 import logging
 import os
@@ -19,6 +16,7 @@ import time
 import tempfile
 import urllib3
 
+from http import HTTPStatus
 from string import Template
 
 import yaml
@@ -57,7 +55,7 @@ DEPLOYMENT_DELETE_TIMEOUT = int(os.environ.get(
 def read_json_or_yaml(path):
     # We assume here, of course, that any JSON file is also a YAML file.
     with io.open(path, 'r', encoding='UTF-8') as f:
-        return yaml.load(f)
+        return yaml.safe_load(f)
 
 
 def set_github_output(name, value):
@@ -83,7 +81,7 @@ def _cfy_cli_inner(cmdline, shell=False, capture_stdout=False):
         env[CLOUDIFY_TENANT_ENV] = DEFAULT_TENANT_NAME
     # If "trust all" is in effect, then disable this warning and
     # assume the user knows what they're doing.
-    ignored_warnings = ["Python 2 is no longer supported"]
+    ignored_warnings = []
     if _use_ssl() and get_ssl_trust_all():
         ignored_warnings.append("Unverified HTTPS request")
     if ignored_warnings:
@@ -177,7 +175,7 @@ def wait_for_and_validate_execution(client, execution):
 
 
 @with_client
-def _create_deployment(name, blueprint_name, inputs, client):
+def _create_deployment(name, blueprint_name, inputs, labels, client):
     cmdline = [
         'deployments', 'create', name, '-b', blueprint_name
     ]
@@ -186,7 +184,7 @@ def _create_deployment(name, blueprint_name, inputs, client):
     temp_inputs_file = None
     if inputs:
         if type(inputs) == dict:
-            with tempfile.NamedTemporaryFile(suffix=".yaml", delete=False) as temp_inputs_file:
+            with tempfile.NamedTemporaryFile(mode='w', suffix=".yaml", delete=False) as temp_inputs_file:
                 logger.info("Created temporary file for inputs: %s", temp_inputs_file.name)
                 yaml.safe_dump(inputs, temp_inputs_file)
                 inputs_file_name = temp_inputs_file.name
@@ -197,6 +195,16 @@ def _create_deployment(name, blueprint_name, inputs, client):
                 "Unhandled inputs type: {}; should be either a dictionary (containing inputs) "
                 "or a string (containing a path to a file)".format(type(inputs)))
         cmdline.extend(['-i', inputs_file_name])
+    # Handle the labels: should be a string - a labels list of the form <key>:<value>,<key>:<value>. 
+    # Any comma and colon in <value> must be escaped with \.
+    if labels:
+        if type(labels) == str:
+            pass
+        else:
+            raise Exception(
+                "Unhandled inputs type: {}; should be a string containing a list of the form "
+                "<key>:<value>,<key>:<value>.".format(type(labels)))
+        cmdline.extend(['--labels', labels])
     try:
         _cfy_cli(cmdline)
     finally:
@@ -250,7 +258,7 @@ def _delete_deployment(name, client):
             client.deployments.get(name)
             time.sleep(1)
         except CloudifyClientError as ex:
-            if ex.status_code == httplib.NOT_FOUND:
+            if ex.status_code == HTTPStatus.NOT_FOUND:
                 logger.info("Deployment deleted")
                 ended = True
                 break
@@ -292,19 +300,19 @@ def init(**kwargs):
     _init_profile()
 
 
-def create_deployment(name, blueprint, inputs_file, **kwargs):
-    _create_deployment(name, blueprint, inputs_file)
+def create_deployment(name, blueprint, inputs_file, labels, **kwargs):
+    _create_deployment(name, blueprint, inputs_file, labels)
 
 
-def create_environment(name, blueprint, inputs_file, outputs_file, **kwargs):
+def create_environment(name, blueprint, inputs_file, labels, outputs_file, **kwargs):
     logger.info(
-        "Creating environment; name=%s, blueprint=%s, inputs=%s, outputs=%s",
-        name, blueprint, inputs_file, outputs_file)
+        "Creating environment; name=%s, blueprint=%s, inputs=%s, labels=%s, outputs=%s",
+        name, blueprint, inputs_file, labels, outputs_file)
     blueprint_name = 'cfyci-{}-bp'.format(name)
     logger.info("Uploading blueprint: %s", blueprint_name)
     upload_blueprint(blueprint_name, blueprint)
     logger.info("Creating deployment: %s", name)
-    _create_deployment(name, blueprint_name, inputs_file)
+    _create_deployment(name, blueprint_name, inputs_file, labels)
     logger.info("Running the install workflow")
     install(name)
     write_environment_outputs(name, outputs_file)
@@ -316,7 +324,7 @@ def get_deployment(deployment_id, client, **kwargs):
     try:
         deployment = client.deployments.get(deployment_id)
     except CloudifyClientError as ex:
-        if ex.status_code == httplib.NOT_FOUND:
+        if ex.status_code == HTTPStatus.NOT_FOUND:
             output_value = ''
         else:
             raise
@@ -370,7 +378,7 @@ class CfyIntegration(object):
         try:
             client.blueprints.get(blueprint_name)
         except CloudifyClientError as ex:
-            if ex.status_code == httplib.NOT_FOUND:
+            if ex.status_code == HTTPStatus.NOT_FOUND:
                 _cfy_cli([
                     'blueprints', 'upload',
                     self._configuration['integration_blueprints_archive_url'],
@@ -417,7 +425,7 @@ class CfyTerraformIntegration(CfyIntegration):
         env_vars = {}
         if self._environment:
             env_vars.update(read_json_or_yaml(self._environment))
-        for key, value in self._environment_mapping.iteritems():
+        for key, value in self._environment_mapping.items():
             if key in os.environ:
                 env_vars[value] = os.environ[key]
         if env_vars:
@@ -508,7 +516,7 @@ class CfyCFNIntegration(CfyIntegration):
             resource_config_kwargs['Parameters'] = [{
                 'ParameterKey': key,
                 'ParameterValue': value
-            } for key, value in parameters.iteritems()]
+            } for key, value in parameters.items()]
         if self._template_url:
             logger.info("Will use template from %s", self._template_url)
             resource_config_kwargs['TemplateURL'] = self._template_url
@@ -668,17 +676,17 @@ def delete_environment(name, delete_blueprint, ignore_failure, client, **kwargs)
 
 @with_client
 def install_or_update(
-        name, blueprint_id, delete_old_blueprint, inputs_file, outputs_file,
+        name, blueprint_id, delete_old_blueprint, inputs_file, labels, outputs_file,
         skip_install, skip_uninstall, skip_reinstall, install_first,
         client, **kwargs):
     logger.info("Trying to get deployment '%s'", name)
     try:
         deployment = client.deployments.get(name, _include=['blueprint_id'])
     except CloudifyClientError as ex:
-        if ex.status_code != httplib.NOT_FOUND:
+        if ex.status_code != HTTPStatus.NOT_FOUND:
             raise
         logger.info("Deployment '%s' not found", name)
-        create_deployment(name, blueprint_id, inputs_file)
+        create_deployment(name, blueprint_id, inputs_file, labels)
         logger.info("Installing deployment '%s'", name)
         install(name)
     else:
@@ -785,6 +793,7 @@ def main():
     create_deployment_parser.add_argument('--name', required=True)
     create_deployment_parser.add_argument('--blueprint', required=True)
     create_deployment_parser.add_argument('--inputs-file', type=optional_existing_path)
+    create_deployment_parser.add_argument('--labels', type=optional_string)
     create_deployment_parser.set_defaults(func=create_deployment)
 
     create_environment_parser = subparsers.add_parser('create-environment', parents=[common_parent])
@@ -792,6 +801,7 @@ def main():
     create_environment_parser.add_argument('--blueprint', required=True)
     create_environment_parser.add_argument('--inputs-file', type=optional_existing_path)
     create_environment_parser.add_argument('--outputs-file', dest='outputs_file', type=optional_string)
+    create_environment_parser.add_argument('--labels', type=optional_string)
     create_environment_parser.set_defaults(func=create_environment)
 
     delete_deployment_parser = subparsers.add_parser('delete-deployment', parents=[common_parent])
@@ -810,6 +820,7 @@ def main():
     install_or_update_parser.add_argument('--delete-old-blueprint', type=boolean_string)
     install_or_update_parser.add_argument('--inputs-file', type=optional_existing_path)
     install_or_update_parser.add_argument('--outputs-file', dest='outputs_file', type=optional_string)
+    install_or_update_parser.add_argument('--labels', type=optional_string)
     install_or_update_parser.set_defaults(func=install_or_update)
 
     cli_parser = subparsers.add_parser('cli', parents=[common_parent])
@@ -884,7 +895,7 @@ def main():
     # action inputs. Therefore, we allow passing them as templates, and we
     # expand them here.
     if IS_GITHUB:
-        for key, value in vars_map.iteritems():
+        for key, value in vars_map.items():
             if value and isinstance(value, str):
                 vars_map[key] = Template(value).substitute(os.environ)
 
