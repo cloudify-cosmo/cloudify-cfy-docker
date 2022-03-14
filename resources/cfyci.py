@@ -59,7 +59,7 @@ def read_json_or_yaml(path):
 
 
 def set_github_output(name, value):
-    print("::set-output name=%s::%s".format(name, value))
+    print("::set-output name={0}::{1}".format(name, value))
 
 
 def _use_ssl():
@@ -177,7 +177,7 @@ def wait_for_and_validate_execution(client, execution):
 @with_client
 def _create_deployment(name, blueprint_name, inputs, labels, client):
     cmdline = [
-        'deployments', 'create', name, '-b', blueprint_name
+        'deployments', 'create', '-n', name, '-b', blueprint_name , '--generate-id'
     ]
     # Handle the inputs: if a string - treat as a path to inputs file.
     # If a dict - treat as actual inputs and use a temporary file to hold them.
@@ -195,7 +195,7 @@ def _create_deployment(name, blueprint_name, inputs, labels, client):
                 "Unhandled inputs type: {}; should be either a dictionary (containing inputs) "
                 "or a string (containing a path to a file)".format(type(inputs)))
         cmdline.extend(['-i', inputs_file_name])
-    # Handle the labels: should be a string - a labels list of the form <key>:<value>,<key>:<value>. 
+    # Handle the labels: should be a string - a labels list of the form <key>:<value>,<key>:<value>.
     # Any comma and colon in <value> must be escaped with \.
     if labels:
         if type(labels) == str:
@@ -206,20 +206,23 @@ def _create_deployment(name, blueprint_name, inputs, labels, client):
                 "<key>:<value>,<key>:<value>.".format(type(labels)))
         cmdline.extend(['--labels', labels])
     try:
-        _cfy_cli(cmdline)
+        create_result = _cfy_cli(cmdline, capture_stdout=True)
     finally:
         if temp_inputs_file:
             logger.info("Deleting temporary file: %s", temp_inputs_file.name)
             os.remove(temp_inputs_file.name)
+    create_result = create_result.decode('utf-8').strip()
+    deployment_id = create_result.split("deployment's id is ")[-1]
     # Now wait until the deployment deletion ended.
     # Since there's no way to get the execution ID of the deployment creation,
     # we need to look it up (see https://cloudifysource.atlassian.net/browse/CY-2385).
-    executions = client.executions.list(deployment_id=name)
+    executions = client.executions.list(deployment_id=deployment_id)
     if len(executions) != 1:
         raise Exception(
             "Unexpected number of executions for deployment "
             "'{}': {} (should be 1)".format(name, len(executions)))
     wait_for_and_validate_execution(client, executions[0])
+    return deployment_id
 
 
 def _start_and_follow_execution(client, deployment_id, workflow_id, parameters):
@@ -236,6 +239,9 @@ def install(name, client):
 
 @with_client
 def uninstall(name, ignore_failure, client):
+    # handle ignore_failure None as it will raise exception on manager_host
+    if ignore_failure == None:
+        ignore_failure = False
     _start_and_follow_execution(client, name, 'uninstall', {
         'ignore_failure': ignore_failure
     })
@@ -282,13 +288,66 @@ def get_environment_data(name, client):
     }
 
 
+@with_client
+def get_environment_data_using_labels(name, labels, client):
+
+    _include = ['id', 'display_name', 'blueprint_id', 'labels']
+    deployments = client.deployments.list(
+        _include=_include, sort='created_at', is_descending=True,
+        _get_all_results=True)
+    found_deployments = []
+
+    for deployment in deployments:
+        matched = False
+        deployment_labels_str = ''
+        for index, dep_label in enumerate(deployment.labels):
+            label_str = '{0}:{1},'
+            # remove last comma
+            if index == len(deployment.labels) - 1:
+                label_str = label_str[:-1]
+            deployment_labels_str += label_str.format(dep_label.get('key'), dep_label.get('value'))
+        if name and labels and deployment.display_name == name and deployment_labels_str == labels:
+            matched = True
+        elif name and not labels and deployment.display_name == name:
+            matched = True
+        elif labels and not name and deployment_labels_str == labels:
+            matched = True
+        if matched == True:
+            outputs = client.deployments.outputs.get(deployment.id)
+            capabilities = client.deployments.capabilities.get(deployment.id)
+            found_deployments.append({
+                "blueprint_id": deployment.blueprint_id,
+                "deployment_id": deployment.id,
+                "deployment_name": deployment.display_name,
+                "deployment_labels": deployment_labels_str,
+                "outputs": outputs['outputs'],
+                "capabilities": capabilities['capabilities']
+            })
+
+    return found_deployments
+
+
 def write_environment_outputs(name, outputs_file, **kwargs):
     if not (outputs_file or IS_GITHUB):
         return
     env_data = get_environment_data(name)
     if IS_GITHUB:
         # Set the environment's data as an output.
-        logger.info("Setting environment data output variable: %s", env_data)
+        # logger.info("Setting environment data output variable: %s", env_data)
+        set_github_output('environment-data', json.dumps(env_data))
+    if outputs_file:
+        logger.info("Writing environment data to %s", outputs_file)
+        with open(outputs_file, 'w') as f:
+            json.dump(env_data, f, indent=4)
+
+
+def write_environment_by_labels_outputs(name, labels, outputs_file, **kwargs):
+    if not (outputs_file or IS_GITHUB):
+        return
+    env_data = get_environment_data_using_labels(name, labels)
+    if IS_GITHUB:
+        # Set the environment's data as an output.
+        # logger.info("Setting environment data output variable: %s", env_data)
         set_github_output('environment-data', json.dumps(env_data))
     if outputs_file:
         logger.info("Writing environment data to %s", outputs_file)
@@ -301,7 +360,7 @@ def init(**kwargs):
 
 
 def create_deployment(name, blueprint, inputs_file, labels, **kwargs):
-    _create_deployment(name, blueprint, inputs_file, labels)
+    return _create_deployment(name, blueprint, inputs_file, labels)
 
 
 def create_environment(name, blueprint, inputs_file, labels, outputs_file, **kwargs):
@@ -312,10 +371,10 @@ def create_environment(name, blueprint, inputs_file, labels, outputs_file, **kwa
     logger.info("Uploading blueprint: %s", blueprint_name)
     upload_blueprint(blueprint_name, blueprint)
     logger.info("Creating deployment: %s", name)
-    _create_deployment(name, blueprint_name, inputs_file, labels)
+    deployment_id = _create_deployment(name, blueprint_name, inputs_file, labels)
     logger.info("Running the install workflow")
-    install(name)
-    write_environment_outputs(name, outputs_file)
+    install(deployment_id)
+    write_environment_outputs(deployment_id, outputs_file)
 
 
 @with_client
@@ -338,9 +397,10 @@ class CfyIntegration(object):
     """
     Root class for all integrations.
     """
-    def __init__(self, deployment_id, outputs_file, configuration):
+    def __init__(self, deployment_id, outputs_file, labels, configuration):
         self._deployment_id = deployment_id
         self._outputs_file = outputs_file
+        self._labels = labels
         self._configuration = configuration
 
     def integration_name(self):
@@ -390,7 +450,8 @@ class CfyIntegration(object):
         # If we got here, then the integration blueprint exists.
         logger.info("Creating deployment")
         inputs = self.prepare_inputs()
-        _create_deployment(self._deployment_id, blueprint_name, inputs)
+        labels = self._labels
+        self._deployment_id = _create_deployment(self._deployment_id, blueprint_name, inputs, labels)
         logger.info("Deployment created successfully; installing it")
         install(self._deployment_id)
         logger.info("Installation ended successfully")
@@ -398,20 +459,25 @@ class CfyIntegration(object):
 
 
 class CfyTerraformIntegration(CfyIntegration):
-    def __init__(self, configuration, name, outputs_file, module, variables, environment, environment_mapping, **kwargs):
-        CfyIntegration.__init__(self, name, outputs_file, configuration)
+    def __init__(self, configuration, name, outputs_file, labels, module, module_path, variables, environment, environment_mapping, plan, **kwargs):
+        CfyIntegration.__init__(self, name, outputs_file, labels, configuration)
         self._module = module
+        self._module_path = module_path
         self._variables = variables
         self._environment = environment
         self._environment_mapping = CfyIntegration.parse_environment_mapping(
             environment_mapping)
+        self._plan = plan
 
     def integration_name(self):
+        if self._plan:
+            return 'terraform_plan'
         return 'terraform'
 
     def prepare_inputs(self):
         inputs = {
-            'module_source': self._module
+            'module_source': self._module,
+            'module_source_path': self._module_path
         }
         if self._variables:
             inputs['variables'] = read_json_or_yaml(self._variables)
@@ -435,9 +501,9 @@ class CfyTerraformIntegration(CfyIntegration):
 
 
 class CfyARMIntegration(CfyIntegration):
-    def __init__(self, configuration, name, outputs_file, resource_group, template_file, parameters_file,
+    def __init__(self, configuration, name, outputs_file, labels, resource_group, template_file, parameters_file,
                  credentials_file, location, **kwargs):
-        CfyIntegration.__init__(self, name, outputs_file, configuration)
+        CfyIntegration.__init__(self, name, outputs_file, labels, configuration)
         self._resource_group = resource_group
         self._template_file = template_file
         self._parameters_file = parameters_file
@@ -472,10 +538,10 @@ class CfyARMIntegration(CfyIntegration):
 
 
 class CfyCFNIntegration(CfyIntegration):
-    def __init__(self, configuration, name, outputs_file, stack_name, template_url, bucket_name,
+    def __init__(self, configuration, name, outputs_file, labels, stack_name, template_url, bucket_name,
                  resource_name, template_file, parameters_file, credentials_file,
                  region_name, **kwargs):
-        CfyIntegration.__init__(self, name, outputs_file, configuration)
+        CfyIntegration.__init__(self, name, outputs_file, labels, configuration)
         self._stack_name = stack_name
         self._template_url = template_url
         self._bucket_name = bucket_name
@@ -538,12 +604,12 @@ class CfyCFNIntegration(CfyIntegration):
 
 class CfyKubernetesIntegration(CfyIntegration):
     def __init__(
-            self, configuration, name, outputs_file, gcp_credentials_file, token, token_file, master_host,
+            self, configuration, name, outputs_file, labels, gcp_credentials_file, token, token_file, master_host,
             namespace, app_definition_file, ca_cert_file, ssl_cert_file, ssl_key_file,
             skip_ssl_verification, other_options_file, validate_status, allow_node_redefinition, debug,
             **kwargs
     ):
-        CfyIntegration.__init__(self, name, outputs_file,configuration)
+        CfyIntegration.__init__(self, name, outputs_file, labels, configuration)
         self._gcp_credentials_file = gcp_credentials_file
         self._token = token
         self._token_file = token_file
@@ -686,7 +752,7 @@ def install_or_update(
         if ex.status_code != HTTPStatus.NOT_FOUND:
             raise
         logger.info("Deployment '%s' not found", name)
-        create_deployment(name, blueprint_id, inputs_file, labels)
+        name = create_deployment(name, blueprint_id, inputs_file, labels)
         logger.info("Installing deployment '%s'", name)
         install(name)
     else:
@@ -839,16 +905,25 @@ def main():
     get_environment_data_parser.add_argument('--outputs-file', type=optional_string)
     get_environment_data_parser.set_defaults(func=write_environment_outputs)
 
+    get_environment_data_by_labels_parser = subparsers.add_parser('get-environment-data-by-labels', parents=[common_parent])
+    get_environment_data_by_labels_parser.add_argument('--name', type=optional_string)
+    get_environment_data_by_labels_parser.add_argument('--labels', type=optional_string)
+    get_environment_data_by_labels_parser.add_argument('--outputs-file', type=optional_string)
+    get_environment_data_by_labels_parser.set_defaults(func=write_environment_by_labels_outputs)
+
     integrations_parent = argparse.ArgumentParser(add_help=False, parents=[common_parent])
     integrations_parent.add_argument('--name', required=True)
     integrations_parent.add_argument('--invocation-params-file', type=optional_existing_path)
     integrations_parent.add_argument('--outputs-file', type=optional_string)
+    integrations_parent.add_argument('--labels', type=optional_string)
 
     terraform_parser = subparsers.add_parser('terraform', parents=[integrations_parent])
     terraform_parser.add_argument('--module', required=True)
+    terraform_parser.add_argument('--module-path', type=optional_string)
     terraform_parser.add_argument('--variables', type=optional_existing_path)
     terraform_parser.add_argument('--environment', type=optional_existing_path)
     terraform_parser.add_argument('--environment-mapping', nargs="*", default=[])
+    terraform_parser.add_argument('--plan', type=boolean_string)
     terraform_parser.set_defaults(func=terraform)
 
     arm_parser = subparsers.add_parser('arm', parents=[integrations_parent])
