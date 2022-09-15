@@ -5,7 +5,7 @@ RUN yum -y update && \
     curl https://bootstrap.pypa.io/pip/3.6/get-pip.py -o get-pip.py && \
     python3 get-pip.py --no-cache-dir && \
     rm -f get-pip.py && \
-    pip install --no-cache-dir cloudify==6.3.0 && \
+    pip install --no-cache-dir cloudify==6.4.0 && \
     rm -rf ~/.cache && \
     set -x && \
     printenv
