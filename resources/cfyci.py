@@ -46,6 +46,7 @@ IS_GITHUB = 'GITHUB_RUN_ID' in os.environ
 OMITTED_ARG = "-"
 CLOUDIFY_HOST_ENV = "CLOUDIFY_HOST"
 CLOUDIFY_SSL_ENV = "CLOUDIFY_SSL"
+CLOUDIFY_TOKEN_ENV = "CLOUDIFY_TOKEN"
 DEPLOYMENT_DELETE_TIMEOUT_DEFAULT = 120
 # Time, in seconds, to wait for deployment deletion
 DEPLOYMENT_DELETE_TIMEOUT = int(os.environ.get(
@@ -102,15 +103,18 @@ def _cfy_cli_inner(cmdline, shell=False, capture_stdout=False):
 
 def _init_profile():
     manager_host = os.environ[CLOUDIFY_HOST_ENV]
-    manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
+    manager_user = os.environ.get(CLOUDIFY_USERNAME_ENV)
+    manager_token = os.environ.get(CLOUDIFY_TOKEN_ENV)
 
     init_cmdline = [
         'profile', 'use', manager_host
     ]
     if _use_ssl():
         init_cmdline.append('--ssl')
-
-    logger.info("Initializing; host=%s, user=%s", manager_host, manager_user)
+    if manager_host:
+        logger.info("Initializing; host=%s, user=%s", manager_host, manager_user)
+    elif manager_token:
+        logger.info("Initializing; host=%s using token", manager_host)
     _cfy_cli_inner(init_cmdline)
     logger.info("Profile created successfully")
 
@@ -135,8 +139,9 @@ def with_client(func):
     """
     def wrapper(*args, **kwargs):
         manager_host = os.environ[CLOUDIFY_HOST_ENV]
-        manager_user = os.environ[CLOUDIFY_USERNAME_ENV]
-        manager_password = os.environ[CLOUDIFY_PASSWORD_ENV]
+        manager_user = os.environ.get(CLOUDIFY_USERNAME_ENV)
+        manager_password = os.environ.get(CLOUDIFY_PASSWORD_ENV)
+        manager_token = os.environ.get(CLOUDIFY_TOKEN_ENV)
         manager_tenant = os.environ.get(CLOUDIFY_TENANT_ENV, DEFAULT_TENANT_NAME)
         use_ssl = _use_ssl()
         ssl_trust_all = get_ssl_trust_all()
@@ -148,6 +153,7 @@ def with_client(func):
             host=manager_host,
             username=manager_user,
             password=manager_password,
+            token=manager_token,
             tenant=manager_tenant,
             protocol=SECURED_PROTOCOL if use_ssl else DEFAULT_PROTOCOL,
             trust_all=ssl_trust_all
@@ -291,6 +297,16 @@ def get_environment_data(name, client):
 @with_client
 def get_environment_data_using_labels(name, labels, client):
 
+    def _labels_match(first_string, second_string):
+        first_array = first_string.split(',')
+        second_array = second_string.split(',')
+        if len(first_array) == len(second_array):
+            for item in first_array:
+                if item not in second_array:
+                    return False
+            return True
+        return False
+
     _include = ['id', 'display_name', 'blueprint_id', 'labels']
     deployments = client.deployments.list(
         _include=_include, sort='created_at', is_descending=True,
@@ -306,11 +322,11 @@ def get_environment_data_using_labels(name, labels, client):
             if index == len(deployment.labels) - 1:
                 label_str = label_str[:-1]
             deployment_labels_str += label_str.format(dep_label.get('key'), dep_label.get('value'))
-        if name and labels and deployment.display_name == name and deployment_labels_str == labels:
+        if name and labels and deployment.display_name == name and _labels_match(deployment_labels_str, labels):
             matched = True
         elif name and not labels and deployment.display_name == name:
             matched = True
-        elif labels and not name and deployment_labels_str == labels:
+        elif labels and not name and _labels_match(deployment_labels_str, labels):
             matched = True
         if matched == True:
             outputs = client.deployments.outputs.get(deployment.id)
@@ -459,7 +475,7 @@ class CfyIntegration(object):
 
 
 class CfyTerraformIntegration(CfyIntegration):
-    def __init__(self, configuration, name, outputs_file, labels, module, module_path, variables, environment, environment_mapping, plan, **kwargs):
+    def __init__(self, configuration, name, outputs_file, labels, module, module_path, variables, environment, environment_mapping, plan, cost, **kwargs):
         CfyIntegration.__init__(self, name, outputs_file, labels, configuration)
         self._module = module
         self._module_path = module_path
@@ -468,10 +484,13 @@ class CfyTerraformIntegration(CfyIntegration):
         self._environment_mapping = CfyIntegration.parse_environment_mapping(
             environment_mapping)
         self._plan = plan
+        self._cost = cost
 
     def integration_name(self):
         if self._plan:
             return 'terraform_plan'
+        if self._cost:
+            return 'terraform_cost'
         return 'terraform'
 
     def prepare_inputs(self):
@@ -924,6 +943,7 @@ def main():
     terraform_parser.add_argument('--environment', type=optional_existing_path)
     terraform_parser.add_argument('--environment-mapping', nargs="*", default=[])
     terraform_parser.add_argument('--plan', type=boolean_string)
+    terraform_parser.add_argument('--cost', type=boolean_string)
     terraform_parser.set_defaults(func=terraform)
 
     arm_parser = subparsers.add_parser('arm', parents=[integrations_parent])
